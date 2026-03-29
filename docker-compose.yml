@@ -1,0 +1,309 @@
+name: automarket
+
+x-common-env: &common-env
+  env_file: .env
+
+x-restart-policy: &restart-policy
+  restart: unless-stopped
+
+services:
+
+  # ─────────────────────────────────────────
+  # DATABASE
+  # ─────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    <<: *restart-policy
+    env_file: .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend-net
+
+  # ─────────────────────────────────────────
+  # REDIS
+  # ─────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    <<: *restart-policy
+    command: >
+      redis-server --requirepass ${REDIS_PASSWORD} --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend-net
+
+  # ─────────────────────────────────────────
+  # BACKEND (FastAPI)
+  # ─────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    <<: *restart-policy
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      - backend-net
+      - frontend-net
+
+  # ─────────────────────────────────────────
+  # FRONTEND (Next.js)
+  # ─────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    <<: *restart-policy
+    env_file: .env
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:3000" ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      - frontend-net
+
+  # ─────────────────────────────────────────
+  # AIRFLOW (Scheduler + Webserver)
+  # ─────────────────────────────────────────
+  airflow-init:
+    image: apache/airflow:2.9.0-python3.11
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate &&
+        airflow users create \
+          --username admin \
+          --password admin123 \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@automarket.kz || true
+    env_file: .env
+    environment:
+      <<: *common-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - backend-net
+
+  airflow-webserver:
+    image: apache/airflow:2.9.0-python3.11
+    <<: *restart-policy
+    command: webserver
+    env_file: .env
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+      - ./parsers:/opt/airflow/parsers
+      - .:/opt/airflow/project
+    depends_on:
+      - airflow-init
+      - postgres
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8080/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - backend-net
+
+  airflow-scheduler:
+    image: apache/airflow:2.9.0-python3.11
+    <<: *restart-policy
+    command: scheduler
+    env_file: .env
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+      - ./parsers:/opt/airflow/parsers
+      - .:/opt/airflow/project
+    depends_on:
+      - airflow-init
+      - postgres
+    healthcheck:
+      test: [ "CMD", "airflow", "jobs", "check", "--job-type", "SchedulerJob", "--hostname", "$(hostname)" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - backend-net
+
+  # ─────────────────────────────────────────
+  # PARSERS (каждый изолирован)
+  # ─────────────────────────────────────────
+  parser-kolesa:
+    build:
+      context: ./parsers
+      dockerfile: kolesa/Dockerfile
+    <<: *restart-policy
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      PARSER_SITE: kolesa
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./parsers:/app
+    networks:
+      - backend-net
+
+  parser-avtorynok:
+    build:
+      context: ./parsers
+      dockerfile: avtorynok/Dockerfile
+    <<: *restart-policy
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      PARSER_SITE: avtorynok
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./parsers:/app
+    networks:
+      - backend-net
+
+  parser-mycar:
+    build:
+      context: ./parsers
+      dockerfile: mycar/Dockerfile
+    <<: *restart-policy
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      PARSER_SITE: mycar
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./parsers:/app
+    networks:
+      - backend-net
+
+  parser-newauto:
+    build:
+      context: ./parsers
+      dockerfile: newauto/Dockerfile
+    <<: *restart-policy
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      PARSER_SITE: newauto
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./parsers:/app
+    networks:
+      - backend-net
+
+  parser-olx:
+    build:
+      context: ./parsers
+      dockerfile: olx/Dockerfile
+    <<: *restart-policy
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      PARSER_SITE: olx
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./parsers:/app
+    networks:
+      - backend-net
+
+  # ─────────────────────────────────────────
+  # NGINX (Reverse Proxy)
+  # ─────────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    <<: *restart-policy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infrastructure/nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - frontend
+      - backend
+    healthcheck:
+      test: [ "CMD", "nginx", "-t" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - frontend-net
+
+# ─────────────────────────────────────────
+# NETWORKS (изоляция трафика)
+# ─────────────────────────────────────────
+networks:
+  backend-net:
+    driver: bridge
+  frontend-net:
+    driver: bridge
+
+# ─────────────────────────────────────────
+# VOLUMES (персистентные данные)
+# ─────────────────────────────────────────
+volumes:
+  postgres_data:
+  redis_data:

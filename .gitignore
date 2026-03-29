@@ -1,0 +1,50 @@
+# AI tools
+.claude/
+.gemini/
+
+# Environment
+.env
+.env.d/
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+
+# Node
+node_modules/
+.next/
+out/
+npm-debug.log*
+
+# Docker
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Airflow
+airflow/logs/*
+!airflow/logs/.gitkeep
+
+# DB data
+postgres_data/
+redis_data/
+
+# macOS
+.DS_Store
+Thumbs.db
+
+# Temp / debug scripts
+debug_kolesa.py
+test_parsers.py
+
+# Parser backups
+parsers/kolesa/parser_html_backup.py

@@ -1,0 +1,120 @@
+/* components/filters/FilterPanel.module.css */
+
+.panel {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: 20px;
+}
+
+.title {
+    font-family: var(--font-heading);
+    font-weight: 700;
+    font-size: 16px;
+    margin-bottom: 20px;
+    color: var(--color-text);
+}
+
+.group {
+    margin-bottom: 16px;
+}
+
+.label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+}
+
+.select,
+.input {
+    width: 100%;
+    background: var(--color-surface-2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    color: var(--color-text);
+    font-size: 14px;
+    padding: 9px 12px;
+    outline: none;
+    transition: border-color 0.2s;
+    appearance: none;
+    font-family: var(--font-body);
+}
+
+.select:focus,
+.input:focus {
+    border-color: var(--color-primary);
+}
+
+.select:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.input::placeholder {
+    color: var(--color-text-muted);
+}
+
+.pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.pill {
+    background: var(--color-surface-2);
+    border: 1px solid var(--color-border);
+    border-radius: 99px;
+    color: var(--color-text-muted);
+    font-size: 12px;
+    font-weight: 600;
+    padding: 5px 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-family: var(--font-body);
+}
+
+.pill:hover {
+    border-color: var(--color-primary);
+    color: var(--color-primary);
+}
+
+.pillActive {
+    background: var(--color-primary-glow);
+    border-color: var(--color-primary);
+    color: var(--color-primary);
+}
+
+.checkboxList {
+    max-height: 180px;
+    overflow-y: auto;
+    background: var(--color-surface-2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.checkboxItem {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+}
+
+.checkboxItem input {
+    accent-color: var(--color-primary);
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+}
+
+.checkboxItem span {
+    font-size: 13px;
+    color: var(--color-text);
+}

@@ -1,0 +1,28 @@
+{
+    "name": "automarket-analytics",
+    "version": "1.0.0",
+    "private": true,
+    "scripts": {
+        "dev": "next dev",
+        "build": "next build",
+        "start": "next start"
+    },
+    "dependencies": {
+        "next": "14.1.4",
+        "react": "18.2.0",
+        "react-dom": "18.2.0",
+        "recharts": "^2.12.1",
+        "axios": "^1.6.7",
+        "swr": "^2.2.5",
+        "zustand": "^4.5.2",
+        "react-select": "^5.8.0",
+        "date-fns": "^3.6.0",
+        "framer-motion": "^11.0.25"
+    },
+    "devDependencies": {
+        "@types/node": "20.11.30",
+        "@types/react": "18.2.73",
+        "@types/react-dom": "18.2.23",
+        "typescript": "5.4.3"
+    }
+}

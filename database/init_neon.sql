@@ -1,0 +1,176 @@
+-- =============================================
+-- ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ (Neon PostgreSQL)
+-- Авторынок Аналитика Казахстана
+--
+-- Эта версия init.sql адаптирована для Neon:
+--   - Убрано CREATE DATABASE (Neon создаёт БД автоматически)
+--   - Убрано \c (psql-команда, не работает в SQL Editor)
+--   - uuid-ossp заменён на gen_random_uuid() (встроен в PG14+)
+-- =============================================
+
+-- Расширения
+CREATE EXTENSION IF NOT EXISTS "pg_trgm"; -- для быстрого поиска по тексту
+
+-- =============================================
+-- СПРАВОЧНИКИ
+-- =============================================
+
+CREATE TABLE IF NOT EXISTS sources (
+    id          SERIAL PRIMARY KEY,
+    name        VARCHAR(50) NOT NULL UNIQUE,   -- 'kolesa', 'olx', etc.
+    display_name VARCHAR(100) NOT NULL,
+    base_url    TEXT NOT NULL,
+    is_active   BOOLEAN DEFAULT TRUE,
+    created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS brands (
+    id          SERIAL PRIMARY KEY,
+    name        VARCHAR(100) NOT NULL UNIQUE,  -- 'Toyota', 'BMW'
+    slug        VARCHAR(100) NOT NULL UNIQUE,
+    created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS models (
+    id          SERIAL PRIMARY KEY,
+    brand_id    INT NOT NULL REFERENCES brands(id) ON DELETE CASCADE,
+    name        VARCHAR(100) NOT NULL,         -- 'Camry', 'X5'
+    slug        VARCHAR(100) NOT NULL,
+    created_at  TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (brand_id, slug)
+);
+
+CREATE TABLE IF NOT EXISTS body_types (
+    id          SERIAL PRIMARY KEY,
+    name        VARCHAR(50) NOT NULL UNIQUE    -- 'Седан', 'Кросс', 'Хэтч'
+);
+
+CREATE TABLE IF NOT EXISTS fuel_types (
+    id          SERIAL PRIMARY KEY,
+    name        VARCHAR(50) NOT NULL UNIQUE    -- 'Бензин', 'Дизель', 'Гибрид'
+);
+
+CREATE TABLE IF NOT EXISTS transmission_types (
+    id          SERIAL PRIMARY KEY,
+    name        VARCHAR(50) NOT NULL UNIQUE    -- 'Автомат', 'Механика', 'Вариатор'
+);
+
+CREATE TABLE IF NOT EXISTS drive_types (
+    id          SERIAL PRIMARY KEY,
+    name        VARCHAR(50) NOT NULL UNIQUE    -- 'Полный', 'Передний', 'Задний'
+);
+
+-- =============================================
+-- ОБЪЯВЛЕНИЯ
+-- =============================================
+
+CREATE TABLE IF NOT EXISTS listings (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    source_id           INT NOT NULL REFERENCES sources(id),
+    external_id         VARCHAR(255) NOT NULL,    -- ID объявления на сайте-источнике
+    brand_id            INT REFERENCES brands(id),
+    model_id            INT REFERENCES models(id),
+    title               TEXT,
+    year                SMALLINT,
+    mileage_km          INT,
+    engine_volume_cc    INT,                       -- объем в куб.см
+    engine_power_hp     SMALLINT,
+    body_type_id        INT REFERENCES body_types(id),
+    fuel_type_id        INT REFERENCES fuel_types(id),
+    transmission_id     INT REFERENCES transmission_types(id),
+    drive_type_id       INT REFERENCES drive_types(id),
+    color               VARCHAR(50),
+    city                VARCHAR(100),
+    region              VARCHAR(100),
+    condition           VARCHAR(20),               -- 'used', 'new'
+    listing_url         TEXT,
+    is_active           BOOLEAN DEFAULT TRUE,      -- FALSE = объявление снято (продано)
+    first_seen_at       TIMESTAMPTZ DEFAULT NOW(),
+    last_seen_at        TIMESTAMPTZ DEFAULT NOW(),
+    closed_at           TIMESTAMPTZ,               -- когда объявление исчезло (продано)
+    UNIQUE (source_id, external_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_listings_brand ON listings(brand_id);
+CREATE INDEX IF NOT EXISTS idx_listings_model ON listings(model_id);
+CREATE INDEX IF NOT EXISTS idx_listings_year ON listings(year);
+CREATE INDEX IF NOT EXISTS idx_listings_city ON listings(city);
+CREATE INDEX IF NOT EXISTS idx_listings_is_active ON listings(is_active);
+CREATE INDEX IF NOT EXISTS idx_listings_first_seen ON listings(first_seen_at);
+
+-- =============================================
+-- ИСТОРИЯ ЦЕН
+-- =============================================
+
+CREATE TABLE IF NOT EXISTS price_history (
+    id          BIGSERIAL PRIMARY KEY,
+    listing_id  UUID NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+    price_kzt   BIGINT NOT NULL,                  -- цена в тенге
+    price_usd   INT,                              -- цена в долларах (если указана)
+    recorded_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_price_history_listing ON price_history(listing_id);
+CREATE INDEX IF NOT EXISTS idx_price_history_recorded_at ON price_history(recorded_at);
+
+-- =============================================
+-- ПОЛЬЗОВАТЕЛИ И ПОДПИСКИ
+-- =============================================
+
+CREATE TABLE IF NOT EXISTS users (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email           VARCHAR(255) NOT NULL UNIQUE,
+    hashed_password TEXT NOT NULL,
+    full_name       VARCHAR(200),
+    phone           VARCHAR(20),
+    is_active       BOOLEAN DEFAULT TRUE,
+    is_verified     BOOLEAN DEFAULT FALSE,
+    created_at      TIMESTAMPTZ DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS subscription_plans (
+    id              SERIAL PRIMARY KEY,
+    name            VARCHAR(50) NOT NULL,         -- 'free', 'pro', 'business'
+    display_name    VARCHAR(100) NOT NULL,
+    price_kzt       INT DEFAULT 0,
+    duration_days   INT DEFAULT 0,                -- 0 = бессрочный (free)
+    features        JSONB DEFAULT '{}'::jsonb,
+    is_active       BOOLEAN DEFAULT TRUE
+);
+
+CREATE TABLE IF NOT EXISTS user_subscriptions (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    plan_id         INT NOT NULL REFERENCES subscription_plans(id),
+    started_at      TIMESTAMPTZ DEFAULT NOW(),
+    expires_at      TIMESTAMPTZ,
+    is_active       BOOLEAN DEFAULT TRUE,
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_subs_user ON user_subscriptions(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_subs_active ON user_subscriptions(is_active, expires_at);
+
+-- =============================================
+-- SEED: Первоначальные данные
+-- =============================================
+
+INSERT INTO sources (name, display_name, base_url) VALUES
+    ('kolesa',     'Колеса.кз',       'https://kolesa.kz'),
+    ('avtorynok',  'Авторынок.кз',    'https://avtorynok.kz'),
+    ('mycar',      'MyCar.kz',        'https://mycar.kz'),
+    ('newauto',    'NewAuto.kz',      'https://newauto.kz'),
+    ('olx',        'OLX.kz',          'https://www.olx.kz')
+ON CONFLICT DO NOTHING;
+
+INSERT INTO subscription_plans (name, display_name, price_kzt, duration_days, features) VALUES
+    ('free', 'Бесплатный', 0, 0, '{"basic_charts": true, "filters": true, "history_days": 30}'),
+    ('pro', 'Профи', 4990, 30,  '{"basic_charts": true, "filters": true, "history_days": 365, "profitability": true, "median_days": true, "export": true}'),
+    ('business', 'Бизнес', 14990, 30, '{"basic_charts": true, "filters": true, "history_days": 730, "profitability": true, "median_days": true, "export": true, "api_access": true, "bulk_analysis": true}')
+ON CONFLICT DO NOTHING;
+
+INSERT INTO body_types (name) VALUES ('Седан'), ('Кроссовер'), ('Хэтчбек'), ('Универсал'), ('Минивэн'), ('Пикап'), ('Купе'), ('Кабриолет'), ('Фургон') ON CONFLICT DO NOTHING;
+INSERT INTO fuel_types (name) VALUES ('Бензин'), ('Дизель'), ('Гибрид'), ('Электро'), ('Газ/Бензин') ON CONFLICT DO NOTHING;
+INSERT INTO transmission_types (name) VALUES ('Автомат'), ('Механика'), ('Вариатор'), ('Робот') ON CONFLICT DO NOTHING;
+INSERT INTO drive_types (name) VALUES ('Передний'), ('Задний'), ('Полный') ON CONFLICT DO NOTHING;

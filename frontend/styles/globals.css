@@ -1,0 +1,141 @@
+/* ============================================
+   АВТОРЫНОК АНАЛИТИКА — Глобальные стили
+   Mobile-First, Premium Dark Theme
+   ============================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Manrope:wght@400;600;700;800&display=swap');
+
+/* ── Дизайн-токены ─────────────────────── */
+:root {
+  /* Цвета */
+  --color-bg:          #0d0f14;
+  --color-surface:     #161b27;
+  --color-surface-2:   #1d2535;
+  --color-border:      rgba(255,255,255,0.07);
+  --color-text:        #e8ecf4;
+  --color-text-muted:  #7b8899;
+  --color-primary:     #3d7fff;
+  --color-primary-glow:rgba(61,127,255,0.18);
+  --color-green:       #22d3a3;
+  --color-red:         #f5476b;
+  --color-yellow:      #f9c23c;
+  --color-gradient:    linear-gradient(135deg, #3d7fff 0%, #7c3dff 100%);
+
+  /* Типографика */
+  --font-heading: 'Manrope', sans-serif;
+  --font-body:    'Inter', sans-serif;
+
+  /* Радиусы */
+  --radius-sm:  8px;
+  --radius-md:  14px;
+  --radius-lg:  22px;
+
+  /* Тени */
+  --shadow-sm: 0 2px 8px rgba(0,0,0,0.3);
+  --shadow-md: 0 8px 30px rgba(0,0,0,0.45);
+  --shadow-card: 0 4px 20px rgba(0,0,0,0.4);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.6;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Утилиты ────────────────────────────── */
+.container {
+  width: 100%;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 16px;
+}
+
+@media (min-width: 768px)  { .container { padding: 0 28px; } }
+@media (min-width: 1200px) { .container { padding: 0 40px; } }
+
+/* ── Карточка ───────────────────────────── */
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  padding: 20px;
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+.card:hover { box-shadow: var(--shadow-md); transform: translateY(-2px); }
+
+/* ── Кнопки ─────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  cursor: pointer;
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 14px;
+  padding: 10px 20px;
+  border-radius: var(--radius-sm);
+  transition: all 0.2s ease;
+  text-decoration: none;
+}
+.btn-primary {
+  background: var(--color-gradient);
+  color: #fff;
+  box-shadow: 0 0 18px var(--color-primary-glow);
+}
+.btn-primary:hover { opacity: 0.9; box-shadow: 0 0 28px var(--color-primary-glow); transform: scale(1.02); }
+.btn-ghost { background: transparent; color: var(--color-text-muted); border: 1px solid var(--color-border); }
+.btn-ghost:hover { background: var(--color-surface-2); color: var(--color-text); }
+
+/* ── Бейдж ──────────────────────────────── */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 99px;
+}
+.badge-green { background: rgba(34,211,163,0.15); color: var(--color-green); }
+.badge-red   { background: rgba(245,71,107,0.15);  color: var(--color-red); }
+.badge-blue  { background: rgba(61,127,255,0.15);  color: var(--color-primary); }
+.badge-pro   { background: var(--color-gradient); color: #fff; }
+
+/* ── Grid ───────────────────────────────── */
+.grid-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+@media (min-width: 768px)  { .grid-stats { grid-template-columns: repeat(4, 1fr); } }
+
+.grid-main {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 20px;
+}
+@media (min-width: 1024px) { .grid-main { grid-template-columns: 300px 1fr; } }
+
+/* ── Скелетон загрузки ─────────────────── */
+.skeleton {
+  background: linear-gradient(90deg, var(--color-surface) 25%, var(--color-surface-2) 50%, var(--color-surface) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: var(--radius-sm);
+}
+@keyframes shimmer { from{background-position:200% 0} to{background-position:-200% 0} }
+
+/* ── Скроллбар ──────────────────────────── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: var(--color-bg); }
+::-webkit-scrollbar-thumb { background: var(--color-surface-2); border-radius: 99px; }

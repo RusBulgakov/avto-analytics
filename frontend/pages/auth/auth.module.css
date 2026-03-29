@@ -1,0 +1,185 @@
+/* pages/auth/auth.module.css */
+
+.page {
+    min-height: 100vh;
+    background: var(--color-bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    background-image: radial-gradient(ellipse at 20% 50%, rgba(61, 127, 255, 0.06) 0%, transparent 60%),
+        radial-gradient(ellipse at 80% 20%, rgba(124, 61, 255, 0.06) 0%, transparent 50%);
+}
+
+.card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: 36px 32px;
+    width: 100%;
+    max-width: 420px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.logoWrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 28px;
+}
+
+.logoIcon {
+    width: 36px;
+    height: 36px;
+    background: linear-gradient(135deg, #3d7fff, #7c3dff);
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+}
+
+.logoText {
+    font-family: var(--font-heading);
+    font-weight: 800;
+    font-size: 16px;
+    color: var(--color-text);
+}
+
+.logoSub {
+    font-size: 11px;
+    color: var(--color-text-muted);
+    margin-left: -4px;
+}
+
+.title {
+    font-family: var(--font-heading);
+    font-weight: 800;
+    font-size: 24px;
+    color: var(--color-text);
+    margin-bottom: 6px;
+}
+
+.sub {
+    font-size: 13px;
+    color: var(--color-text-muted);
+    margin-bottom: 28px;
+}
+
+.form {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.label {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--color-text-muted);
+}
+
+.input {
+    background: var(--color-surface-2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    color: var(--color-text);
+    font-family: var(--font-body);
+    font-size: 14px;
+    padding: 11px 14px;
+    outline: none;
+    transition: border-color 0.2s;
+    width: 100%;
+}
+
+.input:focus {
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px var(--color-primary-glow);
+}
+
+.input::placeholder {
+    color: var(--color-text-muted);
+}
+
+.error {
+    background: rgba(245, 71, 107, 0.1);
+    border: 1px solid rgba(245, 71, 107, 0.3);
+    border-radius: var(--radius-sm);
+    color: var(--color-red);
+    font-size: 13px;
+    padding: 10px 14px;
+}
+
+.submit {
+    width: 100%;
+    justify-content: center;
+    padding: 12px;
+    font-size: 15px;
+    margin-top: 4px;
+}
+
+.footer {
+    margin-top: 20px;
+    text-align: center;
+    font-size: 13px;
+    color: var(--color-text-muted);
+}
+
+.link {
+    color: var(--color-primary);
+    text-decoration: none;
+    font-weight: 500;
+}
+
+.link:hover {
+    text-decoration: underline;
+}
+
+/* Plans comparison */
+.plans {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-top: 24px;
+    padding-top: 24px;
+    border-top: 1px solid var(--color-border);
+}
+
+.plan {
+    background: var(--color-surface-2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    padding: 12px;
+}
+
+.planPro {
+    border-color: rgba(61, 127, 255, 0.4);
+    background: rgba(61, 127, 255, 0.05);
+}
+
+.planName {
+    font-weight: 700;
+    font-size: 13px;
+    color: var(--color-text);
+    margin-bottom: 4px;
+}
+
+.planDesc {
+    font-size: 11px;
+    color: var(--color-text-muted);
+    margin-bottom: 8px;
+    line-height: 1.4;
+}
+
+.planPrice {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-primary);
+}
