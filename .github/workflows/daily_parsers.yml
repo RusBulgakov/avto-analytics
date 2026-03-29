@@ -2,7 +2,7 @@ name: Daily Parsers
 
 on:
   schedule:
-    - cron: '0 3 * * *'  # ежедневно в 03:00 UTC
+    - cron: '0 1 * * *'  # ежедневно в 01:00 UTC (06:00 Астана)
   workflow_dispatch:
     inputs:
       source:
