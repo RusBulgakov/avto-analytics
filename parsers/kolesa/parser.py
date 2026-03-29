@@ -274,7 +274,7 @@ async def parse_city(city: str, session, conn) -> int:
     return saved
 
 
-async def run_parser() -> None:
+async def run_parser() -> int:
     """Основная функция — запускает сбор данных по всем городам."""
     logger.info("Старт парсинга kolesa.kz (JSON-режим, %d городов)", len(CITIES))
     await proxy_manager.refresh()
@@ -291,8 +291,18 @@ async def run_parser() -> None:
                 await asyncio.sleep(random.uniform(5.0, 10.0))
 
     logger.info("Парсинг kolesa.kz завершён. Всего сохранено: %d", total_saved)
+    return total_saved
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    asyncio.run(run_parser())
+    import time
+    from parsers.common.notifier import send_success, send_error
+    
+    start = time.time()
+    try:
+        total = asyncio.run(run_parser())
+        asyncio.run(send_success("kolesa", total, start, time.time()))
+    except Exception as e:
+        logger.exception("Парсер kolesa упал")
+        asyncio.run(send_error("kolesa", e))

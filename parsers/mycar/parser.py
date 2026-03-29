@@ -117,7 +117,7 @@ def _parse_item(item: dict) -> Optional[dict]:
         return None
 
 
-async def run_parser() -> None:
+async def run_parser() -> int:
     logger.info("Старт mycar.kz (JSON API)")
     await proxy_manager.refresh()
     total = 0
@@ -158,8 +158,18 @@ async def run_parser() -> None:
                     break
 
     logger.info("mycar завершён: %d", total)
+    return total
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    asyncio.run(run_parser())
+    import time
+    from parsers.common.notifier import send_success, send_error
+    
+    start = time.time()
+    try:
+        total = asyncio.run(run_parser())
+        asyncio.run(send_success("mycar", total, start, time.time()))
+    except Exception as e:
+        logger.exception("Парсер mycar упал")
+        asyncio.run(send_error("mycar", e))

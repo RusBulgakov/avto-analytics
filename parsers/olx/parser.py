@@ -115,7 +115,7 @@ async def parse_page(page: int, session=None) -> list[dict]:
     return [r for r in results if r and r["external_id"]]
 
 
-async def run_parser() -> None:
+async def run_parser() -> int:
     logger.info("Старт парсинга OLX.kz (без лимита страниц)")
     await proxy_manager.refresh()
     total_saved = 0
@@ -138,8 +138,18 @@ async def run_parser() -> None:
                 await asyncio.sleep(delay)
 
     logger.info("Парсинг OLX.kz завершён. Всего: %d", total_saved)
+    return total_saved
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    asyncio.run(run_parser())
+    import time
+    from parsers.common.notifier import send_success, send_error
+    
+    start = time.time()
+    try:
+        total = asyncio.run(run_parser())
+        asyncio.run(send_success("olx", total, start, time.time()))
+    except Exception as e:
+        logger.exception("Парсер olx упал")
+        asyncio.run(send_error("olx", e))

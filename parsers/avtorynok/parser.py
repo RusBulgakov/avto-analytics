@@ -133,7 +133,7 @@ def _parse_card(card) -> Optional[dict]:
         return None
 
 
-async def run_parser() -> None:
+async def run_parser() -> int:
     logger.info("Старт парсинга avtorynok.kz")
     await proxy_manager.refresh()
     total = 0
@@ -160,8 +160,18 @@ async def run_parser() -> None:
                 logger.info("avtorynok стр %d: %d объявлений", page, len(items))
                 await asyncio.sleep(2 + page % 3)
     logger.info("avtorynok завершён: %d", total)
+    return total
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    asyncio.run(run_parser())
+    import time
+    from parsers.common.notifier import send_success, send_error
+    
+    start = time.time()
+    try:
+        total = asyncio.run(run_parser())
+        asyncio.run(send_success("avtorynok", total, start, time.time()))
+    except Exception as e:
+        logger.exception("Парсер avtorynok упал")
+        asyncio.run(send_error("avtorynok", e))
