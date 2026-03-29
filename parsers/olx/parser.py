@@ -12,9 +12,9 @@ from typing import Optional
 
 from bs4 import BeautifulSoup
 
-from common.http_client import fetch
-from common.db import db_conn, save_listing
-from common.proxy_manager import proxy_manager
+from parsers.common.http_client import fetch
+from parsers.common.db import db_conn, save_listing
+from parsers.common.proxy_manager import proxy_manager
 
 logger = logging.getLogger("parser.olx")
 
