@@ -1,19 +1,27 @@
 """
 app/core/database.py — asyncpg connection pool
 """
+import ssl as _ssl
+from typing import Optional
+
 import asyncpg
 from app.core.config import settings
 
-_pool: asyncpg.Pool | None = None
+_pool: Optional[asyncpg.Pool] = None
 
 
 async def init_db():
     global _pool
-    _pool = await asyncpg.create_pool(
-        dsn=settings.db_url_raw,
-        min_size=5,
-        max_size=20,
-    )
+    kwargs = {
+        "dsn": settings.db_url_raw,
+        "min_size": 2,
+        "max_size": 10,
+    }
+    if settings.db_requires_ssl:
+        kwargs["ssl"] = _ssl.create_default_context()
+        kwargs["min_size"] = 1
+        kwargs["max_size"] = 5
+    _pool = await asyncpg.create_pool(**kwargs)
 
 
 async def get_conn() -> asyncpg.Connection:

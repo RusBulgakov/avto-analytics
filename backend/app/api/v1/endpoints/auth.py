@@ -4,6 +4,7 @@ app/api/v1/endpoints/auth.py — Регистрация, логин, профи�
 from fastapi import APIRouter, HTTPException, status, Depends
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr
+from typing import Optional
 
 from app.core.database import DBSession
 from app.core.security import (
@@ -17,7 +18,7 @@ router = APIRouter(prefix="/auth", tags=["Auth"])
 class RegisterIn(BaseModel):
     email: EmailStr
     password: str
-    full_name: str | None = None
+    full_name: Optional[str] = None
 
 
 class TokenOut(BaseModel):

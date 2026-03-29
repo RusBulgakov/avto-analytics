@@ -2,12 +2,15 @@
 app/core/config.py — Settings через Pydantic BaseSettings
 """
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import List
+from typing import List, Optional
 import json
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    # Neon / serverless — единая строка подключения (приоритет над POSTGRES_*)
+    DATABASE_URL: Optional[str] = None
 
     # DB
     POSTGRES_USER: str = "automarket"
@@ -32,6 +35,9 @@ class Settings(BaseSettings):
 
     @property
     def db_url(self) -> str:
+        if self.DATABASE_URL:
+            # Заменяем postgresql:// на postgresql+asyncpg:// для SQLAlchemy
+            return self.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
         return (
             f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
             f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
@@ -39,10 +45,19 @@ class Settings(BaseSettings):
 
     @property
     def db_url_raw(self) -> str:
+        if self.DATABASE_URL:
+            # asyncpg: убираем query params (sslmode, channel_binding) из URL —
+            # они передаются отдельно через ssl= параметр в create_pool
+            return self.DATABASE_URL.split("?")[0]
         return (
             f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
             f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
         )
+
+    @property
+    def db_requires_ssl(self) -> bool:
+        """True если DATABASE_URL содержит sslmode=require (Neon)"""
+        return bool(self.DATABASE_URL and "sslmode=require" in self.DATABASE_URL)
 
     @property
     def redis_url(self) -> str:

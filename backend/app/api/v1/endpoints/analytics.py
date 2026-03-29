@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 app/api/v1/endpoints/analytics.py
 Аналитические эндпоинты: фильтры, графики цен по времени, рентабельность.
