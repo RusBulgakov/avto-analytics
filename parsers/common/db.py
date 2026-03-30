@@ -118,7 +118,7 @@ async def save_listing(conn: asyncpg.Connection, data: dict) -> str:
         )
 
     # 3. Upsert листинга
-    listing_id = await conn.fetchval(
+    row = await conn.fetchrow(
         """
         INSERT INTO listings (
             source_id, external_id, brand_id, model_id, title, year, mileage_km,
@@ -141,7 +141,7 @@ async def save_listing(conn: asyncpg.Connection, data: dict) -> str:
         WHERE s.name = $1
         ON CONFLICT (source_id, external_id) DO UPDATE
             SET last_seen_at = NOW(), is_active = TRUE
-        RETURNING id
+        RETURNING id, (xmax = 0) AS is_new
         """,
         data["source"], data["external_id"],
         data.get("brand_slug"), data.get("model_slug"),
@@ -152,6 +152,12 @@ async def save_listing(conn: asyncpg.Connection, data: dict) -> str:
         data.get("color"), data.get("city"), data.get("region"),
         data.get("condition", "used"), data.get("listing_url"),
     )
+
+    if not row:
+        return None, False
+
+    listing_id = row["id"]
+    is_new = row["is_new"]
 
     price = data.get("price_kzt")
     if listing_id and price:
@@ -166,7 +172,7 @@ async def save_listing(conn: asyncpg.Connection, data: dict) -> str:
                 listing_id, price, data.get("price_usd"),
             )
 
-    return listing_id
+    return listing_id, is_new
 
 
 async def deactivate_old_listings(conn: asyncpg.Connection, hours_threshold: int = 48) -> int:

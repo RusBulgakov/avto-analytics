@@ -117,10 +117,11 @@ def _parse_item(item: dict) -> Optional[dict]:
         return None
 
 
-async def run_parser() -> int:
+async def run_parser() -> tuple[int, int]:
     logger.info("Старт mycar.kz (JSON API)")
     await proxy_manager.refresh()
     total = 0
+    new_total = 0
 
     async with db_conn() as conn:
         from curl_cffi import requests
@@ -132,7 +133,7 @@ async def run_parser() -> int:
                         API_URL,
                         params={"ordering": "-modified", "limit": PAGE_SIZE, "offset": offset},
                         json=True,
-                        use_proxy=False,
+                        use_proxy=True,
                         session=sess,
                     )
                 except Exception as e:
@@ -147,8 +148,10 @@ async def run_parser() -> int:
                 items = [_parse_item(r) for r in results]
                 items = [i for i in items if i and i["external_id"]]
                 for item in items:
-                    await save_listing(conn, item)
+                    _, is_new = await save_listing(conn, item)
                     total += 1
+                    if is_new:
+                        new_total += 1
 
                 logger.info("mycar offset=%d: %d объявлений", offset, len(items))
                 await asyncio.sleep(2)
@@ -157,8 +160,8 @@ async def run_parser() -> int:
                 if not data.get("next"):
                     break
 
-    logger.info("mycar завершён: %d", total)
-    return total
+    logger.info("mycar завершён: %d, новых: %d", total, new_total)
+    return total, new_total
 
 
 if __name__ == "__main__":
@@ -168,8 +171,8 @@ if __name__ == "__main__":
     
     start = time.time()
     try:
-        total = asyncio.run(run_parser())
-        asyncio.run(send_success("mycar", total, start, time.time()))
+        total, total_new = asyncio.run(run_parser())
+        asyncio.run(send_success("mycar", total, start, time.time(), total_new))
     except Exception as e:
         logger.exception("Парсер mycar упал")
         asyncio.run(send_error("mycar", e))

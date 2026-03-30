@@ -83,17 +83,18 @@ def _card(card):
         return None
 
 
-async def run_parser() -> int:
+async def run_parser() -> tuple[int, int]:
     logger.info("Старт newauto.kz (год=%d)", CURRENT_YEAR)
     await proxy_manager.refresh()
     total = 0
+    total_new = 0
     async with db_conn() as conn:
         from curl_cffi import requests
         async with requests.AsyncSession(impersonate="chrome") as sess:
             for page in range(1, MAX_PAGES + 1):
                 url = LIST_URL if page == 1 else f"{LIST_URL}?page={page}"
                 try:
-                    html = await fetch(url, use_proxy=False, session=sess)
+                    html = await fetch(url, use_proxy=True, session=sess)
                 except Exception as e:
                     logger.error("newauto стр %d: %s", page, e)
                     break
@@ -105,12 +106,14 @@ async def run_parser() -> int:
                     logger.info("newauto стр %d пуста — стоп", page)
                     break
                 for i in items:
-                    await save_listing(conn, i)
+                    _, is_new = await save_listing(conn, i)
                     total += 1
+                    if is_new:
+                        total_new += 1
                 logger.info("newauto стр %d: %d объявлений", page, len(items))
                 await asyncio.sleep(2 + page % 3)
-    logger.info("newauto завершён: %d", total)
-    return total
+    logger.info("newauto завершён: %d, новых: %d", total, total_new)
+    return total, total_new
 
 
 if __name__ == "__main__":
@@ -120,8 +123,8 @@ if __name__ == "__main__":
     
     start = time.time()
     try:
-        total = asyncio.run(run_parser())
-        asyncio.run(send_success("newauto", total, start, time.time()))
+        total, total_new = asyncio.run(run_parser())
+        asyncio.run(send_success("newauto", total, start, time.time(), total_new))
     except Exception as e:
         logger.exception("Парсер newauto упал")
         asyncio.run(send_error("newauto", e))

@@ -104,7 +104,7 @@ def _parse_card(card) -> Optional[dict]:
 async def parse_page(page: int, session=None) -> list[dict]:
     params = {"page": page} if page > 1 else None
     try:
-        html = await fetch(LIST_URL, params=params, use_proxy=False, session=session)
+        html = await fetch(LIST_URL, params=params, use_proxy=True, session=session)
     except Exception as e:
         logger.error("OLX страница %d недоступна: %s", page, e)
         return []
@@ -115,10 +115,11 @@ async def parse_page(page: int, session=None) -> list[dict]:
     return [r for r in results if r and r["external_id"]]
 
 
-async def run_parser() -> int:
+async def run_parser() -> tuple[int, int]:
     logger.info("Старт парсинга OLX.kz (без лимита страниц)")
     await proxy_manager.refresh()
     total_saved = 0
+    total_new = 0
 
     async with db_conn() as conn:
         from curl_cffi import requests
@@ -129,16 +130,18 @@ async def run_parser() -> int:
                     logger.info("Страница %d OLX пуста — останавливаемся.", page)
                     break
                 for item in listings:
-                    await save_listing(conn, item)
+                    _, is_new = await save_listing(conn, item)
                     total_saved += 1
+                    if is_new:
+                        total_new += 1
 
                 logger.info("OLX страница %d: обработано %d объявлений", page, len(listings))
 
                 delay = random.uniform(5.0, 14.0)
                 await asyncio.sleep(delay)
 
-    logger.info("Парсинг OLX.kz завершён. Всего: %d", total_saved)
-    return total_saved
+    logger.info("Парсинг OLX.kz завершён. Всего: %d, новых: %d", total_saved, total_new)
+    return total_saved, total_new
 
 
 if __name__ == "__main__":
@@ -148,8 +151,8 @@ if __name__ == "__main__":
     
     start = time.time()
     try:
-        total = asyncio.run(run_parser())
-        asyncio.run(send_success("olx", total, start, time.time()))
+        total, total_new = asyncio.run(run_parser())
+        asyncio.run(send_success("olx", total, start, time.time(), total_new))
     except Exception as e:
         logger.exception("Парсер olx упал")
         asyncio.run(send_error("olx", e))

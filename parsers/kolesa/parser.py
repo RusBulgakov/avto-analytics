@@ -241,9 +241,10 @@ def _parse_item(obj: dict) -> Optional[dict]:
         return None
 
 
-async def parse_city(city: str, session, conn) -> int:
-    """Парсит все страницы для одного города. Возвращает количество сохранённых."""
+async def parse_city(city: str, session, conn) -> tuple[int, int]:
+    """Парсит все страницы для одного города. Возвращает количество (сохранённых, новых)."""
     saved = 0
+    new_saved = 0
     for page in range(1, MAX_PAGES_PER_CITY + 1):
         if city == "all":
             url = f"{BASE_URL}/cars/" if page == 1 else f"{BASE_URL}/cars/?page={page}"
@@ -251,7 +252,7 @@ async def parse_city(city: str, session, conn) -> int:
             url = f"{BASE_URL}/cars/{city}/" if page == 1 else f"{BASE_URL}/cars/{city}/?page={page}"
 
         try:
-            html = await fetch(url, use_proxy=False, session=session)
+            html = await fetch(url, use_proxy=True, session=session)
         except Exception as e:
             logger.error("kolesa %s стр %d: %s", city, page, e)
             break
@@ -264,34 +265,38 @@ async def parse_city(city: str, session, conn) -> int:
         items = [_parse_item(o) for o in items_raw]
         items = [i for i in items if i and i["external_id"]]
         for item in items:
-            await save_listing(conn, item)
+            _, is_new = await save_listing(conn, item)
             saved += 1
+            if is_new:
+                new_saved += 1
 
         logger.info("kolesa %s стр %d: %d объявлений", city, page, len(items))
 
         await asyncio.sleep(random.uniform(3.0, 8.0))
 
-    return saved
+    return saved, new_saved
 
 
-async def run_parser() -> int:
+async def run_parser() -> tuple[int, int]:
     """Основная функция — запускает сбор данных по всем городам."""
     logger.info("Старт парсинга kolesa.kz (JSON-режим, %d городов)", len(CITIES))
     await proxy_manager.refresh()
 
     total_saved = 0
+    total_new = 0
     async with db_conn() as conn:
         from curl_cffi import requests
         async with requests.AsyncSession(impersonate="chrome") as session:
             for city in CITIES:
                 logger.info("--- Город: %s ---", city)
-                count = await parse_city(city, session, conn)
+                count, new_count = await parse_city(city, session, conn)
                 total_saved += count
-                logger.info("kolesa %s: итого %d", city, count)
+                total_new += new_count
+                logger.info("kolesa %s: итого %d (%d новых)", city, count, new_count)
                 await asyncio.sleep(random.uniform(5.0, 10.0))
 
-    logger.info("Парсинг kolesa.kz завершён. Всего сохранено: %d", total_saved)
-    return total_saved
+    logger.info("Парсинг kolesa.kz завершён. Всего: %d, новых: %d", total_saved, total_new)
+    return total_saved, total_new
 
 
 if __name__ == "__main__":
@@ -301,8 +306,8 @@ if __name__ == "__main__":
     
     start = time.time()
     try:
-        total = asyncio.run(run_parser())
-        asyncio.run(send_success("kolesa", total, start, time.time()))
+        total, total_new = asyncio.run(run_parser())
+        asyncio.run(send_success("kolesa", total, start, time.time(), total_new))
     except Exception as e:
         logger.exception("Парсер kolesa упал")
         asyncio.run(send_error("kolesa", e))
