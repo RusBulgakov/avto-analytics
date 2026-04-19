@@ -18,8 +18,7 @@ import unicodedata
 from typing import Optional
 
 from parsers.common.http_client import fetch
-from parsers.common.db import db_conn, save_listing
-from parsers.common.proxy_manager import proxy_manager
+from parsers.common.db import get_pool, save_listing
 
 logger = logging.getLogger("parser.kolesa")
 
@@ -241,8 +240,8 @@ def _parse_item(obj: dict) -> Optional[dict]:
         return None
 
 
-async def parse_city(city: str, session, conn) -> tuple[int, int]:
-    """Парсит все страницы для одного города. Возвращает количество (сохранённых, новых)."""
+async def parse_city(city: str, session, pool) -> tuple[int, int]:
+    """Парсит все страницы для одного города. Каждый вызов берёт свой коннект из пула."""
     saved = 0
     new_saved = 0
     for page in range(1, MAX_PAGES_PER_CITY + 1):
@@ -252,7 +251,10 @@ async def parse_city(city: str, session, conn) -> tuple[int, int]:
             url = f"{BASE_URL}/cars/{city}/" if page == 1 else f"{BASE_URL}/cars/{city}/?page={page}"
 
         try:
-            html = await fetch(url, use_proxy=True, session=session)
+            # use_proxy=False: бесплатные прокси блокируются kolesa и добавляют
+            # до 45s задержки на каждую страницу из-за retry-цикла — итого 5+ часов
+            # на 15 городов. curl_cffi с Chrome impersonation проходит напрямую.
+            html = await fetch(url, use_proxy=False, session=session)
         except Exception as e:
             logger.error("kolesa %s стр %d: %s", city, page, e)
             break
@@ -264,39 +266,56 @@ async def parse_city(city: str, session, conn) -> tuple[int, int]:
 
         items = [_parse_item(o) for o in items_raw]
         items = [i for i in items if i and i["external_id"]]
-        for item in items:
-            try:
-                _, is_new = await save_listing(conn, item)
-                saved += 1
-                if is_new:
-                    new_saved += 1
-            except Exception as e:
-                logger.warning("kolesa: не удалось сохранить %s: %s", item.get("external_id"), e)
+        async with pool.acquire() as conn:
+            for item in items:
+                try:
+                    _, is_new = await save_listing(conn, item)
+                    saved += 1
+                    if is_new:
+                        new_saved += 1
+                except Exception as e:
+                    logger.warning("kolesa: не удалось сохранить %s: %s", item.get("external_id"), e)
 
         logger.info("kolesa %s стр %d: %d объявлений", city, page, len(items))
 
-        await asyncio.sleep(random.uniform(3.0, 8.0))
+        await asyncio.sleep(random.uniform(2.0, 4.0))
 
     return saved, new_saved
 
 
 async def run_parser() -> tuple[int, int]:
-    """Основная функция — запускает сбор данных по всем городам."""
-    logger.info("Старт парсинга kolesa.kz (JSON-режим, %d городов)", len(CITIES))
-    await proxy_manager.refresh()
+    """Основная функция — запускает сбор данных по всем городам параллельно.
+
+    Города запускаются батчами по CITY_CONCURRENCY штук одновременно.
+    Каждый город берёт свой коннект из asyncpg пула → нет конфликтов.
+    Это сокращает время с 5+ часов до ~40–60 минут.
+    """
+    CITY_CONCURRENCY = 5  # сколько городов парсим одновременно
+
+    logger.info("Старт парсинга kolesa.kz (%d городов, по %d одновременно)", len(CITIES), CITY_CONCURRENCY)
+
+    from curl_cffi import requests
+
+    pool = await get_pool()
 
     total_saved = 0
     total_new = 0
-    async with db_conn() as conn:
-        from curl_cffi import requests
-        async with requests.AsyncSession(impersonate="chrome") as session:
-            for city in CITIES:
-                logger.info("--- Город: %s ---", city)
-                count, new_count = await parse_city(city, session, conn)
-                total_saved += count
-                total_new += new_count
-                logger.info("kolesa %s: итого %d (%d новых)", city, count, new_count)
-                await asyncio.sleep(random.uniform(5.0, 10.0))
+
+    async with requests.AsyncSession(impersonate="chrome") as session:
+        # Разбиваем на батчи — не кладём весь сайт одновременно
+        for i in range(0, len(CITIES), CITY_CONCURRENCY):
+            batch = CITIES[i : i + CITY_CONCURRENCY]
+            logger.info("Батч городов: %s", batch)
+            tasks = [parse_city(city, session, pool) for city in batch]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for city, result in zip(batch, results):
+                if isinstance(result, Exception):
+                    logger.error("kolesa %s: город упал — %s", city, result)
+                else:
+                    count, new_count = result
+                    total_saved += count
+                    total_new += new_count
+                    logger.info("kolesa %s: итого %d (%d новых)", city, count, new_count)
 
     logger.info("Парсинг kolesa.kz завершён. Всего: %d, новых: %d", total_saved, total_new)
     return total_saved, total_new
