@@ -265,10 +265,13 @@ async def parse_city(city: str, session, conn) -> tuple[int, int]:
         items = [_parse_item(o) for o in items_raw]
         items = [i for i in items if i and i["external_id"]]
         for item in items:
-            _, is_new = await save_listing(conn, item)
-            saved += 1
-            if is_new:
-                new_saved += 1
+            try:
+                _, is_new = await save_listing(conn, item)
+                saved += 1
+                if is_new:
+                    new_saved += 1
+            except Exception as e:
+                logger.warning("kolesa: не удалось сохранить %s: %s", item.get("external_id"), e)
 
         logger.info("kolesa %s стр %d: %d объявлений", city, page, len(items))
 

@@ -42,23 +42,35 @@ class ProxyManager:
                     logger.warning("Не удалось загрузить прокси из %s: %s", url, e)
 
         logger.info("Загружено %d сырых прокси, начинаю проверку...", len(raw))
-        tasks = [self._check(proxy) for proxy in set(raw)]
+        # Фиксируем порядок одним list — set() каждый раз даёт разный порядок,
+        # из-за чего zip(set(raw), results) мог паровать не те прокси с результатами.
+        unique_proxies = list(set(raw))
+        sem = asyncio.Semaphore(200)  # не более 200 одновременных проверок
+        tasks = [self._check(proxy, sem) for proxy in unique_proxies]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        self._working_proxies = [p for p, ok in zip(set(raw), results) if ok is True]
+        self._working_proxies = [p for p, ok in zip(unique_proxies, results) if ok is True]
         logger.info("Рабочих прокси: %d", len(self._working_proxies))
 
-    async def _check(self, proxy: str) -> bool:
+    async def _check(self, proxy: str, sem: asyncio.Semaphore | None = None) -> bool:
         """Возвращает True, если прокси работает."""
-        try:
-            async with aiohttp.ClientSession() as session:
+        async def _do_check(session: aiohttp.ClientSession) -> bool:
+            try:
                 async with session.get(
                     CHECK_URL,
                     proxy=f"http://{proxy}",
                     timeout=aiohttp.ClientTimeout(total=CHECK_TIMEOUT),
                 ) as r:
                     return r.status == 200
-        except Exception:
-            return False
+            except Exception:
+                return False
+
+        if sem is not None:
+            async with sem:
+                async with aiohttp.ClientSession() as session:
+                    return await _do_check(session)
+        else:
+            async with aiohttp.ClientSession() as session:
+                return await _do_check(session)
 
     def get(self) -> Optional[str]:
         """Возвращает случайный рабочий прокси или None."""

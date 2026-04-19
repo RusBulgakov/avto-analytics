@@ -53,6 +53,12 @@ async def get_pool() -> asyncpg.Pool:
                 **connect_kwargs,
                 min_size=1,
                 max_size=5,
+                # Neon использует PgBouncer в transaction-pooling режиме.
+                # asyncpg кэширует prepared statements по имени, но PgBouncer
+                # может перенаправить следующий запрос на другой backend,
+                # где этого statement нет → InvalidSQLStatementNameError.
+                # Отключаем кэш — запросы чуть медленнее, но стабильны.
+                statement_cache_size=0,
             )
         else:
             # Режим Docker: отдельные переменные окружения
