@@ -600,3 +600,251 @@ async def get_cities():
             LIMIT 50
         """)
     return [dict(r) for r in rows]
+
+
+# =============================================================================
+# Geography, listing detail, valuation
+# =============================================================================
+
+# DB city slug → (display name, x% on silhouette, y% on silhouette)
+# Coordinates are SVG-space percents (0..100), not real lat/lon. Keep in sync
+# with frontend KZMap viewBox.
+_CITY_COORDS: dict[str, tuple[str, float, float]] = {
+    "almaty":          ("Алматы",          75, 82),
+    "astana":          ("Астана",          52, 42),
+    "shymkent":        ("Шымкент",         55, 88),
+    "karaganda":       ("Караганда",       55, 55),
+    "aktobe":          ("Актобе",          24, 43),
+    "pavlodar":        ("Павлодар",        62, 32),
+    "ust-kamenogorsk": ("Усть-Каменогорск", 82, 37),
+    "kostanay":        ("Костанай",        42, 27),
+    "kostanai":        ("Костанай",        42, 27),
+    "atyrau":          ("Атырау",          14, 62),
+    "uralsk":          ("Уральск",         16, 42),
+    "oral":            ("Уральск",         16, 42),
+    "semey":           ("Семей",           76, 42),
+    "taraz":           ("Тараз",           60, 85),
+    "kyzylorda":       ("Кызылорда",       42, 75),
+    "aktau":           ("Актау",           8,  74),
+    "petropavlovsk":   ("Петропавловск",   48, 18),
+    "temirtau":        ("Темиртау",        56, 52),
+    "kokshetau":       ("Кокшетау",        50, 30),
+    "turkestan":       ("Туркестан",       50, 86),
+}
+
+
+@router.get("/geo", summary="Карта KZ: координаты городов + объявления и ср. цена")
+async def get_geo():
+    """Возвращает список городов из словаря _CITY_COORDS с количеством активных
+    объявлений и средней ценой. Города БЕЗ координат отбрасываются."""
+    slugs = list(_CITY_COORDS.keys())
+    async with DBSession() as conn:
+        rows = await conn.fetch("""
+            SELECT
+                LOWER(l.city) AS slug,
+                COUNT(DISTINCT l.id)::int AS listings,
+                ROUND(AVG(ph.price_kzt))::bigint AS avg_price_kzt
+            FROM listings l
+            JOIN sources s ON s.id = l.source_id
+            LEFT JOIN price_history ph ON ph.listing_id = l.id
+                AND ph.recorded_at >= NOW() - INTERVAL '7 day'
+            WHERE l.is_active = TRUE
+              AND LOWER(l.city) = ANY($1::text[])
+            GROUP BY LOWER(l.city)
+        """, slugs)
+    by_slug = {r["slug"]: r for r in rows}
+    result = []
+    for slug, (display, x, y) in _CITY_COORDS.items():
+        r = by_slug.get(slug)
+        result.append({
+            "slug": slug,
+            "name": display,
+            "x": x,
+            "y": y,
+            "listings": int(r["listings"]) if r else 0,
+            "avg_price_kzt": int(r["avg_price_kzt"]) if r and r["avg_price_kzt"] else None,
+        })
+    return result
+
+
+@router.get("/listing/{listing_id}", summary="Одно объявление с историей цены")
+async def get_listing(listing_id: str):
+    """Получить детали объявления + всю историю цены."""
+    async with DBSession() as conn:
+        listing = await conn.fetchrow("""
+            SELECT
+                l.id::text AS id,
+                l.external_id,
+                l.title,
+                l.year,
+                l.mileage_km,
+                l.city,
+                l.listing_url,
+                l.first_seen_at,
+                l.last_seen_at,
+                l.is_active,
+                b.id AS brand_id,
+                b.name AS brand,
+                m.id AS model_id,
+                m.name AS model,
+                s.name AS source
+            FROM listings l
+            JOIN sources s ON s.id = l.source_id
+            LEFT JOIN brands b ON b.id = l.brand_id
+            LEFT JOIN models m ON m.id = l.model_id
+            WHERE l.id = $1::uuid
+        """, listing_id)
+        if not listing:
+            raise HTTPException(status_code=404, detail="listing not found")
+
+        history = await conn.fetch("""
+            SELECT recorded_at AS date, price_kzt
+            FROM price_history
+            WHERE listing_id = $1::uuid
+            ORDER BY recorded_at ASC
+        """, listing_id)
+
+    return {
+        **dict(listing),
+        "price_history": [dict(h) for h in history],
+    }
+
+
+@router.get("/valuation", summary="Fair-price оценка для объявления")
+async def get_valuation(listing_id: str = Query(...)):
+    """Сравнивает цену объявления с распределением похожих активных
+    (тот же brand/model, ±1 год, ±15% пробега) за последние 14 дней.
+    Возвращает fair_low (p10), median (p50), fair_high (p90), verdict."""
+    async with DBSession() as conn:
+        base = await conn.fetchrow("""
+            SELECT l.id::text AS id, l.brand_id, l.model_id, l.year,
+                   l.mileage_km,
+                   (SELECT price_kzt FROM price_history
+                    WHERE listing_id = l.id
+                    ORDER BY recorded_at DESC LIMIT 1) AS current_price
+            FROM listings l WHERE l.id = $1::uuid
+        """, listing_id)
+        if not base:
+            raise HTTPException(status_code=404, detail="listing not found")
+
+        if not (base["brand_id"] and base["model_id"] and base["year"]):
+            return {"error": "insufficient_data"}
+
+        mileage = base["mileage_km"]
+        mileage_lo = int(mileage * 0.85) if mileage else None
+        mileage_hi = int(mileage * 1.15) if mileage else None
+
+        if mileage_lo is not None:
+            stats = await conn.fetchrow("""
+                WITH latest AS (
+                    SELECT DISTINCT ON (listing_id) listing_id, price_kzt
+                    FROM price_history
+                    WHERE recorded_at >= NOW() - INTERVAL '14 day'
+                    ORDER BY listing_id, recorded_at DESC
+                )
+                SELECT
+                    PERCENTILE_CONT(0.1) WITHIN GROUP (ORDER BY latest.price_kzt)::bigint AS fair_low,
+                    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY latest.price_kzt)::bigint AS median,
+                    PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY latest.price_kzt)::bigint AS fair_high,
+                    COUNT(*)::int AS sample_size
+                FROM listings l
+                JOIN latest ON latest.listing_id = l.id
+                WHERE l.brand_id = $1
+                  AND l.model_id = $2
+                  AND l.year BETWEEN $3 AND $4
+                  AND l.mileage_km BETWEEN $5 AND $6
+                  AND l.id <> $7::uuid
+            """, base["brand_id"], base["model_id"],
+                 base["year"] - 1, base["year"] + 1,
+                 mileage_lo, mileage_hi, listing_id)
+        else:
+            stats = await conn.fetchrow("""
+                WITH latest AS (
+                    SELECT DISTINCT ON (listing_id) listing_id, price_kzt
+                    FROM price_history
+                    WHERE recorded_at >= NOW() - INTERVAL '14 day'
+                    ORDER BY listing_id, recorded_at DESC
+                )
+                SELECT
+                    PERCENTILE_CONT(0.1) WITHIN GROUP (ORDER BY latest.price_kzt)::bigint AS fair_low,
+                    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY latest.price_kzt)::bigint AS median,
+                    PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY latest.price_kzt)::bigint AS fair_high,
+                    COUNT(*)::int AS sample_size
+                FROM listings l
+                JOIN latest ON latest.listing_id = l.id
+                WHERE l.brand_id = $1
+                  AND l.model_id = $2
+                  AND l.year BETWEEN $3 AND $4
+                  AND l.id <> $5::uuid
+            """, base["brand_id"], base["model_id"],
+                 base["year"] - 1, base["year"] + 1, listing_id)
+
+    current = int(base["current_price"]) if base["current_price"] else None
+    fair_low = stats["fair_low"]
+    fair_high = stats["fair_high"]
+    median = stats["median"]
+    verdict = None
+    margin_if_resell = None
+    if current and fair_low and fair_high and median:
+        if current < fair_low:
+            verdict = "cheap"
+            margin_if_resell = round(100.0 * (median - current) / current, 1)
+        elif current > fair_high:
+            verdict = "expensive"
+        else:
+            verdict = "fair"
+
+    return {
+        "listing_id": listing_id,
+        "current": current,
+        "fair_low": fair_low,
+        "median": median,
+        "fair_high": fair_high,
+        "sample_size": stats["sample_size"],
+        "verdict": verdict,
+        "margin_if_resell_pct": margin_if_resell,
+    }
+
+
+@router.get("/similar", summary="Похожие объявления")
+async def get_similar(listing_id: str = Query(...), limit: int = Query(8, ge=1, le=30)):
+    """Активные объявления той же марки/модели ± 1 год, близкий пробег."""
+    async with DBSession() as conn:
+        base = await conn.fetchrow("""
+            SELECT brand_id, model_id, year, mileage_km
+            FROM listings WHERE id = $1::uuid
+        """, listing_id)
+        if not base or not base["brand_id"]:
+            return []
+
+        mileage = base["mileage_km"] or 0
+        rows = await conn.fetch("""
+            WITH latest AS (
+                SELECT DISTINCT ON (listing_id) listing_id, price_kzt
+                FROM price_history
+                ORDER BY listing_id, recorded_at DESC
+            )
+            SELECT
+                l.id::text AS id,
+                b.name AS brand, m.name AS model,
+                l.year, l.mileage_km, l.city,
+                s.name AS source, l.listing_url,
+                latest.price_kzt AS price_kzt
+            FROM listings l
+            JOIN sources s ON s.id = l.source_id
+            LEFT JOIN brands b ON b.id = l.brand_id
+            LEFT JOIN models m ON m.id = l.model_id
+            JOIN latest ON latest.listing_id = l.id
+            WHERE l.is_active = TRUE
+              AND l.id <> $1::uuid
+              AND l.brand_id = $2
+              AND l.model_id = $3
+              AND l.year BETWEEN $4 AND $5
+              AND ($6::int = 0 OR ABS(COALESCE(l.mileage_km, $6) - $6) < 30000)
+            ORDER BY ABS(COALESCE(l.mileage_km, $6) - $6) ASC NULLS LAST
+            LIMIT $7
+        """, listing_id, base["brand_id"], base["model_id"],
+             base["year"] - 1 if base["year"] else 1900,
+             base["year"] + 1 if base["year"] else 2100,
+             mileage, limit)
+    return [dict(r) for r in rows]

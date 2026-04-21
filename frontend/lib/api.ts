@@ -39,6 +39,11 @@ export const analyticsApi = {
     getLiquidity: (params?: Record<string, unknown>) => api.get('/api/v1/analytics/liquidity', { params }).then((r: any) => r.data),
     getRecent: (params?: Record<string, unknown>) => api.get('/api/v1/analytics/recent', { params }).then((r: any) => r.data),
     getCities: () => api.get('/api/v1/analytics/cities').then((r: any) => r.data),
+    // Geo / listing detail / valuation
+    getGeo: () => api.get('/api/v1/analytics/geo').then((r: any) => r.data),
+    getListing: (id: string) => api.get(`/api/v1/analytics/listing/${id}`).then((r: any) => r.data),
+    getValuation: (id: string) => api.get('/api/v1/analytics/valuation', { params: { listing_id: id } }).then((r: any) => r.data),
+    getSimilar: (id: string, limit = 8) => api.get('/api/v1/analytics/similar', { params: { listing_id: id, limit } }).then((r: any) => r.data),
 };
 
 export const authApi = {
