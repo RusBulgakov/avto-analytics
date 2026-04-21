@@ -138,6 +138,10 @@ async def run_parser() -> tuple[int, int]:
     await proxy_manager.refresh()
     total = 0
     total_new = 0
+    # avtorynok.kz не имеет реальной пагинации — один и тот же набор объявлений
+    # возвращается на любом номере страницы. Останавливаемся сразу, как только
+    # страница не содержит ни одного нового ID относительно уже обработанных.
+    seen_ids: set[str] = set()
     async with db_conn() as conn:
         from curl_cffi import requests
         async with requests.AsyncSession(impersonate="chrome") as sess:
@@ -155,12 +159,22 @@ async def run_parser() -> tuple[int, int]:
                 if not items:
                     logger.info("avtorynok стр %d пуста — стоп", page)
                     break
+                # Если все ID на этой странице уже видели — бесконечная пагинация, стоп
+                page_ids = {i["external_id"] for i in items}
+                new_ids = page_ids - seen_ids
+                if not new_ids:
+                    logger.info("avtorynok стр %d: все %d ID уже обработаны — стоп (бесконечная пагинация)", page, len(page_ids))
+                    break
+                seen_ids |= page_ids
                 for item in items:
-                    _, is_new = await save_listing(conn, item)
-                    total += 1
-                    if is_new:
-                        total_new += 1
-                logger.info("avtorynok стр %d: %d объявлений", page, len(items))
+                    try:
+                        _, is_new = await save_listing(conn, item)
+                        total += 1
+                        if is_new:
+                            total_new += 1
+                    except Exception as e:
+                        logger.warning("avtorynok: не удалось сохранить %s: %s", item.get("external_id"), e)
+                logger.info("avtorynok стр %d: %d объявлений (%d новых ID)", page, len(items), len(new_ids))
                 await asyncio.sleep(2 + page % 3)
     logger.info("avtorynok завершён: %d, новых: %d", total, total_new)
     return total, total_new

@@ -45,8 +45,9 @@ def _parse_card(card) -> Optional[dict]:
         if not url.startswith("http"):
             url = BASE_URL + url
 
-        # ID из URL вида /obyavlenie/.../IDxxxx.html
-        id_match = re.search(r"ID(\d+)", url)
+        # ID из URL вида /d/obyavlenie/.../IDqMNaw.html
+        # OLX перешёл с числовых ID (ID12345) на буквенно-цифровые (IDqMNaw)
+        id_match = re.search(r"ID([A-Za-z0-9]+)", url)
         external_id = id_match.group(1) if id_match else None
 
         title_el = card.select_one("h6, h4, [data-cy='ad-card-title']")

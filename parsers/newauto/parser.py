@@ -1,10 +1,11 @@
 """
 newauto/parser.py — newauto.kz (новые автомобили от дилеров)
-Исправления:
-  - external_id берётся из URL (regex), а не из несуществующего data-id
-  - year = текущий год если не найден в title (все авто — новые, текущего года)
-  - mileage_km = 0 для всех записей (новые авто)
-  - condition = "new" всегда
+Особенности сайта:
+  - newauto.kz использует TLS fingerprinting — curl/aiohttp возвращают пустой ответ.
+    curl_cffi с Chrome impersonation даёт полный HTML.
+  - /catalog возвращает 241 модель (article/.car-item); пагинации нет.
+  - URL моделей: /cars/bmw/x5 — числового ID нет; используем slug "bmw-x5".
+  - year = текущий год (все авто новые), mileage_km = 0, condition = "new".
 """
 import asyncio, logging, re, unicodedata
 from datetime import date
@@ -34,9 +35,21 @@ def _price(raw):
 
 
 def _extract_id_from_url(url: str) -> Optional[str]:
-    """Извлекает числовой ID из URL страницы объявления."""
+    """
+    Извлекает ID объявления из URL.
+    Поддерживает два формата:
+      - числовой: /something/12345  → "12345"
+      - slug-паттерн: /cars/bmw/x5   → "bmw-x5"  (формат newauto.kz)
+    """
+    # Числовой ID (общий случай)
     m = re.search(r"/(\d+)(?:[/?#]|$)", url)
-    return m.group(1) if m else None
+    if m:
+        return m.group(1)
+    # Slug-паттерн newauto.kz: /cars/{brand}/{model}
+    m = re.match(r".*/cars/([^/?#]+)/([^/?#]+)", url)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
+    return None
 
 
 def _card(card):
@@ -99,7 +112,9 @@ async def run_parser() -> tuple[int, int]:
                     logger.error("newauto стр %d: %s", page, e)
                     break
                 soup = BeautifulSoup(html, "lxml")
-                cards = soup.select(".car-card, .item, article, .catalog-item")
+                # article и .car-item — оба работают на newauto.kz/catalog
+                # (.car-card, .item, .catalog-item — не существуют на сайте)
+                cards = soup.select("article, .car-item")
                 items = [_card(c) for c in cards]
                 items = [i for i in items if i and i["external_id"]]
                 if not items:

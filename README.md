@@ -57,10 +57,10 @@
 | Площадка | Метод | Объявлений/запуск | Время парсинга |
 |----------|-------|------------------|----------------|
 | [Kolesa.kz](https://kolesa.kz) | Embedded JSON из HTML (15 городов × 5 параллельно) | ~30 000 | ~12 мин |
-| [mycar.kz](https://mycar.kz) | REST JSON API | ~2 400 | ~37 мин |
-| [newauto.kz](https://newauto.kz) | HTML парсинг | ~4 600 | ~2 мин |
-| [avtorynok.kz](https://avtorynok.kz) | HTML парсинг | ~480 | ~2 мин |
-| [OLX.kz](https://olx.kz) | HTML парсинг | ~500 | ~2 мин |
+| [mycar.kz](https://mycar.kz) | REST JSON API | ~5 400 | ~37 мин |
+| [newauto.kz](https://newauto.kz) | HTML парсинг (241 модель, slug-ID) | ~241 | ~1 мин |
+| [avtorynok.kz](https://avtorynok.kz) | HTML парсинг (стоп по повтору ID) | ~16 | ~1 мин |
+| [OLX.kz](https://olx.kz) | HTML парсинг (alphanumeric ID) | ~500 | ~15 мин |
 
 ---
 
@@ -258,6 +258,9 @@ users / subscription_plans / user_subscriptions             — пользова
 - **Kolesa атрибуты:** На страницах листинга kolesa.kz возвращает только `brand`, `model`, `avgPrice` в `attributes` — поля `mileage_km`, `engine_volume_cc`, `fuel_type` и т.д. будут `NULL`. Полные данные доступны только на странице конкретного объявления (парсинг детальных страниц не реализован).
 - **Neon Pooler + asyncpg:** Используется `statement_cache_size=0` — обязательно при работе через PgBouncer в transaction-pooling режиме, иначе `InvalidSQLStatementNameError`.
 - **Бесплатные прокси:** Включены для mycar/olx/avtorynok/newauto. Для kolesa отключены (`use_proxy=False`) — curl_cffi с Chrome impersonation проходит напрямую, прокси только добавляют задержки через retry-loop.
+- **avtorynok.kz пагинация:** Сайт возвращает одни и те же ~16 объявлений на любом номере страницы. Парсер останавливается после первого повтора ID (стоп по `seen_ids`).
+- **newauto.kz TLS fingerprinting:** Сайт блокирует curl/aiohttp — возвращает пустой ответ. Работает только через `curl_cffi` с Chrome impersonation. Каталог (/catalog) содержит 241 модель без числовых ID; используем slug-ID вида `bmw-x5`.
+- **OLX.kz ID формат:** OLX сменил числовые ID (`ID12345`) на буквенно-цифровые (`IDqMNaw`). Парсер использует `r"ID([A-Za-z0-9]+)"` для поддержки обоих форматов.
 
 ---
 
