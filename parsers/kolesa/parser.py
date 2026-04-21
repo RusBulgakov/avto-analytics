@@ -45,6 +45,31 @@ CITIES = [
     "ekibastuz",
 ]
 
+# Топ-15 брендов по Казахстану — парсим через национальный фид /cars/{brand}/
+# URL-структура идентична городскому: listing.items.push(...) тот же JSON.
+# Даёт доступ к объявлениям со всего KZ, которые не попали в региональный парсинг.
+BRAND_FEEDS = [
+    "toyota",
+    "vaz",          # ВАЗ (Lada)
+    "hyundai",
+    "mercedes-benz",
+    "kia",
+    "volkswagen",
+    "bmw",
+    "nissan",
+    "lexus",
+    "mitsubishi",
+    "audi",
+    "honda",
+    "chevrolet",
+    "daewoo",
+    "subaru",
+]
+
+# Итоговый список задач: сначала города (региональный охват),
+# затем бренды (национальный охват для топ-марок).
+ALL_FEEDS = CITIES + BRAND_FEEDS
+
 # Маппинг типов кузова из колес-атрибутов
 BODY_TYPE_MAP = {
     "sedan": "Седан",
@@ -284,15 +309,20 @@ async def parse_city(city: str, session, pool) -> tuple[int, int]:
 
 
 async def run_parser() -> tuple[int, int]:
-    """Основная функция — запускает сбор данных по всем городам параллельно.
+    """Основная функция — запускает сбор данных по всем городам + брендам параллельно.
 
-    Города запускаются батчами по CITY_CONCURRENCY штук одновременно.
-    Каждый город берёт свой коннект из asyncpg пула → нет конфликтов.
-    Это сокращает время с 5+ часов до ~40–60 минут.
+    Фиды (города + бренды) запускаются батчами по CITY_CONCURRENCY одновременно.
+    Каждый фид берёт свой коннект из asyncpg пула → нет конфликтов.
+    - Города (15 шт.): региональный охват
+    - Бренды (15 шт.): национальный фид топ-марок, pokrываeт объявления мимо городского парсинга
+    Итого 30 фидов × 5000 max = до 150 000 объявлений за один запуск.
     """
     CITY_CONCURRENCY = 5  # сколько городов парсим одновременно
 
-    logger.info("Старт парсинга kolesa.kz (%d городов, по %d одновременно)", len(CITIES), CITY_CONCURRENCY)
+    logger.info(
+        "Старт парсинга kolesa.kz (%d городов + %d брендов = %d фидов, по %d одновременно)",
+        len(CITIES), len(BRAND_FEEDS), len(ALL_FEEDS), CITY_CONCURRENCY,
+    )
 
     from curl_cffi import requests
 
@@ -303,19 +333,19 @@ async def run_parser() -> tuple[int, int]:
 
     async with requests.AsyncSession(impersonate="chrome") as session:
         # Разбиваем на батчи — не кладём весь сайт одновременно
-        for i in range(0, len(CITIES), CITY_CONCURRENCY):
-            batch = CITIES[i : i + CITY_CONCURRENCY]
-            logger.info("Батч городов: %s", batch)
-            tasks = [parse_city(city, session, pool) for city in batch]
+        for i in range(0, len(ALL_FEEDS), CITY_CONCURRENCY):
+            batch = ALL_FEEDS[i : i + CITY_CONCURRENCY]
+            logger.info("Батч фидов: %s", batch)
+            tasks = [parse_city(feed, session, pool) for feed in batch]
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            for city, result in zip(batch, results):
+            for feed, result in zip(batch, results):
                 if isinstance(result, Exception):
-                    logger.error("kolesa %s: город упал — %s", city, result)
+                    logger.error("kolesa %s: фид упал — %s", feed, result)
                 else:
                     count, new_count = result
                     total_saved += count
                     total_new += new_count
-                    logger.info("kolesa %s: итого %d (%d новых)", city, count, new_count)
+                    logger.info("kolesa %s: итого %d (%d новых)", feed, count, new_count)
 
     logger.info("Парсинг kolesa.kz завершён. Всего: %d, новых: %d", total_saved, total_new)
     return total_saved, total_new
