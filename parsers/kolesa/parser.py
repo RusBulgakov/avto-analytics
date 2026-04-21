@@ -337,7 +337,10 @@ async def run_parser() -> tuple[int, int]:
     Дубли (объявление появляется в городском и брендовом фидах) — без проблем:
     save_listing использует ON CONFLICT → только обновляет last_seen_at.
     """
-    CITY_CONCURRENCY = 5  # сколько городов парсим одновременно
+    # 3 параллельных фида вместо 5: GitHub Actions datacenter IP блокируется
+    # kolesa.kz при слишком высоком burst rate (5 × req/3s = 100 req/min → timeout).
+    # При 3 параллельных = 60 req/min — проходит без блока.
+    CITY_CONCURRENCY = 3
 
     logger.info(
         "Старт парсинга kolesa.kz (%d городов + %d брендов = %d фидов, по %d одновременно)",
@@ -353,19 +356,32 @@ async def run_parser() -> tuple[int, int]:
 
     async with requests.AsyncSession(impersonate="chrome") as session:
         # Разбиваем на батчи — не кладём весь сайт одновременно
-        for i in range(0, len(ALL_FEEDS), CITY_CONCURRENCY):
+        for batch_num, i in enumerate(range(0, len(ALL_FEEDS), CITY_CONCURRENCY)):
             batch = ALL_FEEDS[i : i + CITY_CONCURRENCY]
-            logger.info("Батч фидов: %s", batch)
+            logger.info("Батч %d/%d фидов: %s", batch_num + 1,
+                        (len(ALL_FEEDS) + CITY_CONCURRENCY - 1) // CITY_CONCURRENCY, batch)
             tasks = [parse_city(feed, session, pool) for feed in batch]
             results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            timeout_count = 0
             for feed, result in zip(batch, results):
                 if isinstance(result, Exception):
                     logger.error("kolesa %s: фид упал — %s", feed, result)
+                    timeout_count += 1
                 else:
                     count, new_count = result
                     total_saved += count
                     total_new += new_count
                     logger.info("kolesa %s: итого %d (%d новых)", feed, count, new_count)
+
+            # Если все фиды в батче тайм-аутнули — IP заблокирован, нет смысла продолжать
+            if timeout_count == len(batch):
+                logger.warning("Все %d фидов в батче тайм-аутнули — вероятно IP заблокирован, завершаем", len(batch))
+                break
+
+            # Пауза между батчами: снижает вероятность rate limit для следующего батча
+            if i + CITY_CONCURRENCY < len(ALL_FEEDS):
+                await asyncio.sleep(random.uniform(8.0, 15.0))
 
     logger.info("Парсинг kolesa.kz завершён. Всего: %d, новых: %d", total_saved, total_new)
     return total_saved, total_new
