@@ -1,4 +1,7 @@
 services:
+  # ─────────────────────────────────────────
+  # Backend: FastAPI web service (free, sleeps after 15 min)
+  # ─────────────────────────────────────────
   - type: web
     name: kolesa-backend
     runtime: python
@@ -23,3 +26,21 @@ services:
         value: "30"
       - key: ALGORITHM
         value: HS256
+
+  # ─────────────────────────────────────────
+  # Frontend: Next.js static export (free, unlimited, never sleeps)
+  # ─────────────────────────────────────────
+  - type: web
+    name: kolesa-frontend
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm ci --legacy-peer-deps && npm run build
+    staticPublishPath: ./out
+    pullRequestPreviewsEnabled: false
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        sync: false
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
