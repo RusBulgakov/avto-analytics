@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Авто Аналитика KZ — Дашборд</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+// Tweakable defaults
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "theme": "dark",
+  "density": "normal"
+}/*EDITMODE-END*/;
+</script>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script src="data.js"></script>
+<script type="text/babel" src="components.jsx"></script>
+<script type="text/babel" src="charts.jsx"></script>
+
+<script type="text/babel">
+const { useState, useEffect, useMemo } = React;
+
+function TopBrandsTable() {
+  const max = Math.max(...BRANDS.map(b => b.listings));
+  return (
+    <div style={{ maxHeight: 410, overflow: 'auto' }}>
+      <table className="tbl">
+        <thead>
+          <tr>
+            <th style={{ width: 30 }}>#</th>
+            <th>Марка</th>
+            <th className="right">Объявл.</th>
+            <th style={{ width: 100 }}>Доля</th>
+            <th className="right">Ср. цена, ₸</th>
+            <th className="right">30д</th>
+          </tr>
+        </thead>
+        <tbody>
+          {BRANDS.map((b, i) => (
+            <tr key={b.id}>
+              <td><span className="rank">{i+1}</span></td>
+              <td><strong>{b.name}</strong></td>
+              <td className="num tnum">{fmt.int(b.listings)}</td>
+              <td>
+                <span className="miniBar" style={{ width: `${(b.listings/max) * 80}px`, opacity: 0.7 }} />
+              </td>
+              <td className="num tnum">{fmt.priceFull(b.avg)}</td>
+              <td className="num">
+                <span className={`badge ${b.delta >= 0 ? 'up' : 'down'}`}>
+                  {b.delta >= 0 ? '▲' : '▼'} {Math.abs(b.delta).toFixed(1)}%
+                </span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ProfitTable() {
+  return (
+    <div style={{ maxHeight: 480, overflow: 'auto' }}>
+      <table className="tbl">
+        <thead>
+          <tr>
+            <th style={{ width: 30 }}>#</th>
+            <th>Модель</th>
+            <th>Год</th>
+            <th className="right">Покупка, ₸</th>
+            <th className="right">Продажа, ₸</th>
+            <th className="right">Маржа</th>
+            <th className="right">Дней</th>
+            <th className="right">Объём</th>
+            <th>Риск</th>
+          </tr>
+        </thead>
+        <tbody>
+          {PROFIT_MODELS.map((m, i) => (
+            <tr key={i}>
+              <td><span className="rank">{i+1}</span></td>
+              <td>
+                <strong>{m.brand} {m.model}</strong>
+                <div style={{ fontSize: 10.5, color: 'var(--text-muted)', fontFamily: 'var(--mono)' }}>{m.gen}</div>
+              </td>
+              <td className="mono">{m.year}</td>
+              <td className="num tnum">{fmt.priceFull(m.buy)}</td>
+              <td className="num tnum">{fmt.priceFull(m.sell)}</td>
+              <td className="num">
+                <span className="badge up">+{m.margin.toFixed(1)}%</span>
+              </td>
+              <td className="num tnum">{m.days}</td>
+              <td className="num tnum">{m.vol}</td>
+              <td>
+                <span className={`badge ${m.risk === 'low' ? 'up' : m.risk === 'medium' ? 'accent' : 'down'}`}>
+                  {m.risk === 'low' ? 'низкий' : m.risk === 'medium' ? 'средний' : 'высокий'}
+                </span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function RecentFeed() {
+  return (
+    <div>
+      {RECENT_LISTINGS.map(l => (
+        <a key={l.id} href="Listing.html" style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr auto auto',
+          gap: 10,
+          padding: '10px 0',
+          borderBottom: '1px solid var(--border)',
+          alignItems: 'center',
+        }}>
+          <div>
+            <div style={{ fontSize: 12.5, fontWeight: 500 }}>
+              {l.brand} {l.model} · <span className="mono dim">{l.year}</span>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, fontFamily: 'var(--mono)' }}>
+              {l.mileage} тыс км · {l.city} · {l.src}
+            </div>
+          </div>
+          <div style={{ textAlign: 'right' }}>
+            <div className="mono tnum" style={{ fontSize: 13, fontWeight: 500 }}>
+              {fmt.priceFull(l.price)} <span className="dim">₸</span>
+            </div>
+            {l.delta !== 0 && (
+              <div className={`mono ${l.delta < 0 ? 'down' : 'up'}`} style={{ fontSize: 10.5 }}>
+                {l.delta < 0 ? '▼' : '▲'} {fmt.priceFull(Math.abs(l.delta))}
+              </div>
+            )}
+          </div>
+          <div className="mono dim" style={{ fontSize: 10.5, width: 40, textAlign: 'right' }}>
+            {l.minutes}м
+          </div>
+        </a>
+      ))}
+    </div>
+  );
+}
+
+function SourceList() {
+  const total = SOURCES.reduce((s, x) => s + x.count, 0);
+  return (
+    <div>
+      {SOURCES.map(s => {
+        const pct = (s.count / total) * 100;
+        return (
+          <div key={s.name} className="src-row">
+            <div className="src-name">
+              <span style={{ display: 'inline-block', width: 7, height: 7, borderRadius: '50%', background: s.color, marginRight: 6, verticalAlign: 'middle' }} />
+              {s.name}
+            </div>
+            <div className="src-count tnum">{fmt.int(s.count)} <span className="dim">· {pct.toFixed(1)}%</span></div>
+            <div className="src-bar"><div className="src-bar-fill" style={{ width: `${pct}%`, background: s.color }} /></div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function App() {
+  const [theme, setTheme] = useState(TWEAK_DEFAULTS.theme);
+  const [density, setDensity] = useState(TWEAK_DEFAULTS.density);
+  const [filters, setFilters] = useState({ period: 90 });
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
+
+  // KPI calcs
+  const idxLast = PRICE_INDEX[PRICE_INDEX.length - 1].value;
+  const idxPrev = PRICE_INDEX[PRICE_INDEX.length - 30].value;
+  const idxDelta = ((idxLast - idxPrev) / idxPrev) * 100;
+
+  const usdLast = USDKZT[USDKZT.length - 1].value;
+  const usdPrev = USDKZT[USDKZT.length - 30].value;
+  const usdDelta = ((usdLast - usdPrev) / usdPrev) * 100;
+
+  return (
+    <div className="app">
+      <Topbar activePage="dashboard" />
+      <FilterBar filters={filters} setFilters={setFilters} />
+
+      <main className="main">
+        {/* KPI row */}
+        <div className="kpi-grid">
+          <KPI
+            label={<>● ИНДЕКС ЦЕН <span className="mono dim">AA·IDX</span></>}
+            value={idxLast.toFixed(1)}
+            delta={idxDelta}
+            foot={<>база 100 = 01 янв 2026 · {fmt.int(161640)} активных</>}
+            sparkData={PRICE_INDEX.slice(-60)}
+            sparkColor={idxDelta >= 0 ? 'var(--up)' : 'var(--down)'}
+          />
+          <KPI
+            label={<>🛒 ТОП МАРЖА</>}
+            value="+25.1"
+            unit="%"
+            delta={2.3}
+            foot={<span>Toyota LC Prado 150 · окупаемость 16 дн.</span>}
+            sparkData={makePriceSeriesLocal(22, 0.05, 0.8)}
+            sparkColor="var(--up)"
+          />
+          <KPI
+            label={<>⚡ ЛИКВИДНОСТЬ</>}
+            value="18"
+            unit="дн"
+            delta={-5.2}
+            inverted
+            foot={<>медиана времени продажи · 50% уходит за ≤14 дн.</>}
+            sparkData={makePriceSeriesLocal(20, -0.02, 0.5)}
+            sparkColor="var(--up)"
+          />
+          <KPI
+            label={<>💱 USD/KZT</>}
+            value={usdLast.toFixed(1)}
+            delta={usdDelta}
+            foot={<>корреляция с ценой: <span className="mono up">+0.78</span> (за 90 дн.)</>}
+            sparkData={USDKZT.slice(-60)}
+            sparkColor={usdDelta >= 0 ? 'var(--down)' : 'var(--up)'}
+          />
+        </div>
+
+        {/* Main chart + right column */}
+        <div className="grid-2-1">
+          <div className="card">
+            <div className="card-h">
+              <div>
+                <div className="card-title">Индекс авторынка KZ</div>
+                <div className="card-sub">Средневзвешенный индекс цен · сравнение с курсом USD/KZT</div>
+              </div>
+              <div style={{ display: 'flex', gap: 12, fontSize: 11, fontFamily: 'var(--mono)' }}>
+                <span><span style={{ display: 'inline-block', width: 8, height: 2, background: 'var(--info)', verticalAlign: 'middle', marginRight: 4 }} /> Индекс цен</span>
+                <span><span style={{ display: 'inline-block', width: 8, height: 2, background: 'var(--accent)', verticalAlign: 'middle', marginRight: 4 }} /> USD/KZT (норм.)</span>
+              </div>
+            </div>
+            <div className="card-b">
+              <LineChart
+                series={[
+                  { data: PRICE_INDEX, color: 'var(--info)' },
+                  { data: USDKZT.map(d => ({ ...d, value: d.value / 5.15 })), color: 'var(--accent)', dashed: true, area: false },
+                ]}
+                height={300}
+                yFormat={v => v.toFixed(1)}
+                annotations={[
+                  { i: 32, label: 'ЦБ −0.5%' },
+                  { i: 68, label: 'USD пик' },
+                ]}
+              />
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-h">
+              <div>
+                <div className="card-title">Лента · новые объявления</div>
+                <div className="card-sub">Потоковые изменения цен · LIVE</div>
+              </div>
+              <span className="live-dot" />
+            </div>
+            <div className="card-b" style={{ paddingTop: 4 }}>
+              <RecentFeed />
+            </div>
+          </div>
+        </div>
+
+        {/* Heatmap + Funnel */}
+        <div className="grid-2-1">
+          <div className="card">
+            <div className="card-h">
+              <div>
+                <div className="card-title">Матрица цен: год × пробег</div>
+                <div className="card-sub">Средняя цена в млн ₸ · вся выборка</div>
+              </div>
+              <span className="badge info">Toyota Camry</span>
+            </div>
+            <div className="card-b">
+              <Heatmap />
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-h">
+              <div>
+                <div className="card-title">Воронка ликвидности</div>
+                <div className="card-sub">Распределение объявлений по времени продажи</div>
+              </div>
+            </div>
+            <div className="card-b">
+              <Funnel />
+            </div>
+          </div>
+        </div>
+
+        {/* Map + sources */}
+        <div className="grid-2-1">
+          <div className="card">
+            <div className="card-h">
+              <div>
+                <div className="card-title">Казахстан · активность по городам</div>
+                <div className="card-sub">Объём рынка и медианная цена</div>
+              </div>
+            </div>
+            <div className="card-b">
+              <KZMap />
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-h">
+              <div>
+                <div className="card-title">Источники данных</div>
+                <div className="card-sub">5 площадок · обновление 06:00 Астана</div>
+              </div>
+              <span className="badge up">● онлайн</span>
+            </div>
+            <div className="card-b">
+              <SourceList />
+            </div>
+          </div>
+        </div>
+
+        {/* Profit table */}
+        <div className="card">
+          <div className="card-h">
+            <div>
+              <div className="card-title">Топ моделей для перепродажи</div>
+              <div className="card-sub">Рентабельность · время окупаемости · объём рынка</div>
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <span className="badge neutral">маржа ≥ 15%</span>
+              <span className="badge neutral">объём ≥ 100</span>
+              <button className="topbar-btn">Экспорт CSV</button>
+            </div>
+          </div>
+          <div className="card-b flush">
+            <ProfitTable />
+          </div>
+        </div>
+
+        {/* Top brands */}
+        <div className="grid-1-1">
+          <div className="card">
+            <div className="card-h">
+              <div>
+                <div className="card-title">Топ марок</div>
+                <div className="card-sub">По числу активных объявлений</div>
+              </div>
+              <a href="Model.html" className="topbar-btn" style={{ fontSize: 12 }}>Все марки →</a>
+            </div>
+            <div className="card-b flush">
+              <TopBrandsTable />
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-h">
+              <div>
+                <div className="card-title">Объём торгов, 90 дней</div>
+                <div className="card-sub">Ежедневное число новых объявлений</div>
+              </div>
+            </div>
+            <div className="card-b">
+              <LineChart
+                series={[{ data: PRICE_INDEX.map((d, i) => ({ day: i, value: 1200 + Math.sin(i/3)*280 + Math.random()*120 })), color: 'var(--up)' }]}
+                height={260}
+                yFormat={v => v.toFixed(0)}
+              />
+            </div>
+          </div>
+        </div>
+      </main>
+
+      <Tweaks theme={theme} setTheme={setTheme} density={density} setDensity={setDensity} />
+    </div>
+  );
+}
+
+function makePriceSeriesLocal(start, trend, noise) {
+  const out = []; let v = start;
+  for (let i = 0; i < 60; i++) {
+    v += trend + Math.sin(i/5) * noise + (Math.random() - 0.5) * noise * 0.4;
+    out.push({ day: i, value: v });
+  }
+  return out;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

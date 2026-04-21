@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Toyota Camry — Авто Аналитика KZ</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "theme": "dark",
+  "density": "normal"
+}/*EDITMODE-END*/;
+</script>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script src="data.js"></script>
+<script type="text/babel" src="components.jsx"></script>
+<script type="text/babel" src="charts.jsx"></script>
+
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+function CamryListings() {
+  return (
+    <table className="tbl">
+      <thead>
+        <tr>
+          <th>Год</th>
+          <th className="right">Пробег</th>
+          <th className="right">Цена, ₸</th>
+          <th>Город</th>
+          <th className="right">Дней</th>
+          <th className="right">Vs. медиана</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {CAMRY_LISTINGS.map((l, i) => {
+          const median = 14_800_000;
+          const diff = ((l.price - median) / median) * 100;
+          return (
+            <tr key={i}>
+              <td className="mono">{l.year}</td>
+              <td className="num tnum">{l.mileage} тыс</td>
+              <td className="num tnum"><strong>{fmt.priceFull(l.price)}</strong></td>
+              <td>{l.city}</td>
+              <td className="num tnum">{l.days}</td>
+              <td className="num">
+                <span className={`badge ${diff <= 0 ? 'up' : 'down'}`}>
+                  {diff <= 0 ? '▼' : '▲'} {Math.abs(diff).toFixed(1)}%
+                </span>
+              </td>
+              <td><a href="Listing.html" className="topbar-btn" style={{ fontSize: 11, height: 24, padding: '0 8px' }}>Открыть →</a></td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+function ModelsList() {
+  const models = [
+    { name: 'Camry', listings: 3840, avg: 14_800_000, delta: 2.1, active: true },
+    { name: 'Corolla', listings: 5120, avg: 9_200_000, delta: 0.8 },
+    { name: 'Land Cruiser Prado', listings: 2180, avg: 26_900_000, delta: 4.6 },
+    { name: 'Land Cruiser 200', listings: 1240, avg: 42_400_000, delta: 5.8 },
+    { name: 'RAV4', listings: 2840, avg: 16_400_000, delta: 1.9 },
+    { name: 'Highlander', listings: 920, avg: 22_800_000, delta: 3.1 },
+    { name: 'Hilux', listings: 1480, avg: 19_200_000, delta: 2.4 },
+    { name: 'Fortuner', listings: 680, avg: 18_400_000, delta: 1.2 },
+  ];
+  return (
+    <div>
+      {models.map((m, i) => (
+        <div key={i} style={{
+          display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 8, alignItems: 'center',
+          padding: '10px 0', borderBottom: '1px solid var(--border)',
+          background: m.active ? 'var(--surface-2)' : 'transparent',
+          margin: m.active ? '0 -14px' : 0,
+          paddingLeft: m.active ? 14 : 0,
+          paddingRight: m.active ? 14 : 0,
+          borderRadius: m.active ? 4 : 0,
+        }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 500 }}>{m.name}</div>
+            <div className="mono" style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>{fmt.int(m.listings)} объявл.</div>
+          </div>
+          <div className="mono tnum" style={{ fontSize: 12 }}>{(m.avg/1_000_000).toFixed(1)}<span className="dim"> млн</span></div>
+          <span className={`badge ${m.delta >= 0 ? 'up' : 'down'}`} style={{ minWidth: 52, justifyContent: 'center' }}>
+            {m.delta >= 0 ? '▲' : '▼'} {Math.abs(m.delta).toFixed(1)}%
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function App() {
+  const [theme, setTheme] = useState(TWEAK_DEFAULTS.theme);
+  const [density, setDensity] = useState(TWEAK_DEFAULTS.density);
+  const [filters, setFilters] = useState({ period: 90, brand: 'Toyota', model: 'Camry' });
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
+
+  const last = CAMRY_SERIES[CAMRY_SERIES.length - 1].value * 1000;
+  const prev30 = CAMRY_SERIES[CAMRY_SERIES.length - 30].value * 1000;
+  const delta30 = ((last - prev30) / prev30) * 100;
+
+  return (
+    <div className="app">
+      <Topbar activePage="model" />
+      <FilterBar filters={filters} setFilters={setFilters} />
+
+      <main className="main">
+        <div>
+          <div className="breadcrumb">
+            <a href="Dashboard.html">Дашборд</a>
+            <span className="sep">/</span>
+            <a href="#">Марки</a>
+            <span className="sep">/</span>
+            <a href="#">Toyota</a>
+            <span className="sep">/</span>
+            <span style={{ color: 'var(--text)' }}>Camry</span>
+          </div>
+        </div>
+
+        {/* Hero */}
+        <div className="card">
+          <div className="detail-hero">
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                <span className="page-title" style={{ fontSize: 26 }}>Toyota Camry</span>
+                <span className="badge neutral">XV70 · VIII пок.</span>
+                <span className="badge up">● Ликвидная</span>
+              </div>
+              <div style={{ color: 'var(--text-muted)', fontSize: 13, maxWidth: 640 }}>
+                Среднеразмерный седан · 2017–2025 · 3 840 активных объявлений в Казахстане.
+                Одна из самых торгуемых моделей на рынке, предсказуемая маржа перепродажи 18–22%.
+              </div>
+            </div>
+            <div style={{ textAlign: 'right' }}>
+              <div className="uppercase">средняя цена сейчас</div>
+              <div className="big-price tnum">
+                {(last/1_000_000).toFixed(1)}<span className="unit">млн ₸</span>
+              </div>
+              <div style={{ marginTop: 6, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <span className={`badge ${delta30 >= 0 ? 'up' : 'down'}`}>
+                  {delta30 >= 0 ? '▲' : '▼'} {Math.abs(delta30).toFixed(1)}% · 30д
+                </span>
+                <span className="badge neutral">n = 3 840</span>
+              </div>
+            </div>
+          </div>
+          <div className="card-b">
+            <div className="stat-inline">
+              <div className="si"><div className="si-l">медиана</div><div className="si-v">14.2 млн ₸</div></div>
+              <div className="si"><div className="si-l">мин / макс</div><div className="si-v">6.8 / 24.4 млн ₸</div></div>
+              <div className="si"><div className="si-l">ср. пробег</div><div className="si-v">68 тыс км</div></div>
+              <div className="si"><div className="si-l">ср. год</div><div className="si-v">2019.4</div></div>
+              <div className="si"><div className="si-l">дней на продажу</div><div className="si-v up">12</div></div>
+              <div className="si"><div className="si-l">маржа перепр.</div><div className="si-v up">+22.5%</div></div>
+              <div className="si"><div className="si-l">прогноз 30д</div><div className="si-v accent">+1.8%</div></div>
+            </div>
+          </div>
+        </div>
+
+        {/* Chart + models sidebar */}
+        <div className="grid-2-1">
+          <div className="card">
+            <div className="card-h">
+              <div>
+                <div className="card-title">Динамика цены · 90 дней</div>
+                <div className="card-sub">Средняя · медиана · объём</div>
+              </div>
+              <div style={{ display: 'flex', gap: 12, fontSize: 11, fontFamily: 'var(--mono)' }}>
+                <span><span style={{ display: 'inline-block', width: 8, height: 2, background: 'var(--info)', verticalAlign: 'middle', marginRight: 4 }} /> Средняя</span>
+                <span><span style={{ display: 'inline-block', width: 8, height: 2, background: 'var(--up)', verticalAlign: 'middle', marginRight: 4 }} /> Медиана</span>
+                <span><span style={{ display: 'inline-block', width: 8, height: 2, background: 'var(--accent)', verticalAlign: 'middle', marginRight: 4, borderTop: '2px dashed var(--accent)' }} /> Прогноз</span>
+              </div>
+            </div>
+            <div className="card-b">
+              <LineChart
+                series={[
+                  { data: CAMRY_SERIES, color: 'var(--info)' },
+                  { data: CAMRY_SERIES.map(d => ({ ...d, value: d.value * 0.95 })), color: 'var(--up)', area: false },
+                ]}
+                height={320}
+                yFormat={v => (v/1000).toFixed(1) + 'М'}
+                annotations={[{ i: 45, label: 'USD +3%' }]}
+              />
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-h">
+              <div>
+                <div className="card-title">Toyota · модели</div>
+                <div className="card-sub">8 из 22 моделей</div>
+              </div>
+            </div>
+            <div className="card-b">
+              <ModelsList />
+            </div>
+          </div>
+        </div>
+
+        {/* Heatmap */}
+        <div className="card">
+          <div className="card-h">
+            <div>
+              <div className="card-title">Матрица: год × пробег — Toyota Camry</div>
+              <div className="card-sub">Целевая цена покупки по возрасту и пробегу</div>
+            </div>
+          </div>
+          <div className="card-b">
+            <Heatmap brand="Toyota Camry" />
+          </div>
+        </div>
+
+        {/* Active listings */}
+        <div className="card">
+          <div className="card-h">
+            <div>
+              <div className="card-title">Активные объявления · 3 840</div>
+              <div className="card-sub">Сортировка: отклонение от медианы</div>
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <span className="badge up">▼ ниже медианы — 1 820</span>
+              <span className="badge down">▲ выше медианы — 2 020</span>
+            </div>
+          </div>
+          <div className="card-b flush">
+            <CamryListings />
+          </div>
+        </div>
+
+        {/* Market comparison */}
+        <div className="grid-1-1-1">
+          <div className="card">
+            <div className="card-h">
+              <div className="card-title">По городам</div>
+            </div>
+            <div className="card-b">
+              {[
+                { c: 'Алматы', n: 1280, avg: 15.2, d: 2.8 },
+                { c: 'Астана', n: 890, avg: 14.8, d: 1.4 },
+                { c: 'Шымкент', n: 420, avg: 13.6, d: 0.9 },
+                { c: 'Караганда', n: 280, avg: 13.2, d: -0.4 },
+                { c: 'Актобе', n: 240, avg: 14.1, d: 2.2 },
+                { c: 'Другие', n: 730, avg: 13.8, d: 1.1 },
+              ].map((r,i) => (
+                <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 10, padding: '9px 0', borderBottom: '1px solid var(--border)', alignItems: 'center' }}>
+                  <div style={{ fontSize: 12.5 }}>{r.c} <span className="dim mono" style={{ fontSize: 10.5 }}>· {r.n}</span></div>
+                  <div className="mono tnum" style={{ fontSize: 12 }}>{r.avg.toFixed(1)} млн</div>
+                  <span className={`badge ${r.d >= 0 ? 'up' : 'down'}`} style={{ minWidth: 50, justifyContent: 'center' }}>{r.d >= 0 ? '▲' : '▼'} {Math.abs(r.d).toFixed(1)}%</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-h">
+              <div className="card-title">Распределение цен</div>
+            </div>
+            <div className="card-b">
+              <svg width="100%" height="220" viewBox="0 0 320 220">
+                {(() => {
+                  const bins = [
+                    { r: '6-8М', v: 180 },
+                    { r: '8-10М', v: 340 },
+                    { r: '10-12М', v: 620 },
+                    { r: '12-14М', v: 880 },
+                    { r: '14-16М', v: 780 },
+                    { r: '16-18М', v: 560 },
+                    { r: '18-20М', v: 310 },
+                    { r: '20-22М', v: 120 },
+                    { r: '22-24М', v: 50 },
+                  ];
+                  const max = Math.max(...bins.map(b => b.v));
+                  const bw = (320 - 20) / bins.length;
+                  return bins.map((b, i) => {
+                    const h = (b.v / max) * 160;
+                    const x = 10 + i * bw;
+                    return (
+                      <g key={i}>
+                        <rect x={x + 2} y={180 - h} width={bw - 4} height={h} fill="var(--info)" opacity={i === 3 ? 1 : 0.5} rx="2" />
+                        <text x={x + bw/2} y={200} fontSize="9" fontFamily="var(--mono)" fill="var(--text-muted)" textAnchor="middle">{b.r}</text>
+                        {i === 3 && <text x={x + bw/2} y={175 - h} fontSize="10" fontFamily="var(--mono)" fill="var(--up)" textAnchor="middle">МЕД.</text>}
+                      </g>
+                    );
+                  });
+                })()}
+              </svg>
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-h">
+              <div className="card-title">Сравнение моделей</div>
+            </div>
+            <div className="card-b">
+              {[
+                { m: 'Toyota Camry', p: 14.2, d: 22.5, good: true },
+                { m: 'Hyundai Sonata', p: 11.8, d: 18.2 },
+                { m: 'Kia K5', p: 12.4, d: 17.8 },
+                { m: 'Honda Accord', p: 13.6, d: 16.4 },
+                { m: 'Mazda 6', p: 11.2, d: 14.8 },
+                { m: 'Nissan Teana', p: 9.8, d: 13.1 },
+              ].map((r, i) => (
+                <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 10, padding: '9px 0', borderBottom: '1px solid var(--border)', alignItems: 'center' }}>
+                  <div style={{ fontSize: 12.5, fontWeight: r.good ? 600 : 400 }}>{r.m}</div>
+                  <div className="mono tnum" style={{ fontSize: 12 }}>{r.p.toFixed(1)} млн</div>
+                  <span className={`badge ${r.good ? 'up' : 'neutral'}`} style={{ minWidth: 56, justifyContent: 'center' }}>+{r.d.toFixed(1)}%</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </main>
+
+      <Tweaks theme={theme} setTheme={setTheme} density={density} setDensity={setDensity} />
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

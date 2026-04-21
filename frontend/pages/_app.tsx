@@ -1,7 +1,44 @@
-// pages/_app.tsx
+// pages/_app.tsx — App shell with next/font and theme provider
 import type { AppProps } from 'next/app';
+import { Inter, Space_Grotesk, JetBrains_Mono } from 'next/font/google';
+import { useEffect } from 'react';
 import '@/styles/globals.css';
 
+const body = Inter({
+    subsets: ['latin', 'cyrillic'],
+    weight: ['400', '500', '600'],
+    variable: '--font-body',
+    display: 'swap',
+});
+
+const display = Space_Grotesk({
+    subsets: ['latin'],
+    weight: ['400', '500', '600', '700'],
+    variable: '--font-display',
+    display: 'swap',
+});
+
+const mono = JetBrains_Mono({
+    subsets: ['latin'],
+    weight: ['400', '500'],
+    variable: '--font-mono',
+    display: 'swap',
+});
+
 export default function App({ Component, pageProps }: AppProps) {
-    return <Component {...pageProps} />;
+    // Sync theme from localStorage on mount (data-theme attribute on <html>)
+    useEffect(() => {
+        const saved = localStorage.getItem('theme');
+        if (saved === 'light' || saved === 'dark') {
+            document.documentElement.setAttribute('data-theme', saved);
+        } else {
+            document.documentElement.setAttribute('data-theme', 'dark');
+        }
+    }, []);
+
+    return (
+        <div className={`${body.variable} ${display.variable} ${mono.variable}`} style={{ minHeight: '100vh' }}>
+            <Component {...pageProps} />
+        </div>
+    );
 }
