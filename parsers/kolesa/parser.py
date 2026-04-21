@@ -45,30 +45,48 @@ CITIES = [
     "ekibastuz",
 ]
 
-# Топ-15 брендов по Казахстану — парсим через национальный фид /cars/{brand}/
+# Все бренды с kolesa.kz — национальный фид /cars/{brand}/
 # URL-структура идентична городскому: listing.items.push(...) тот же JSON.
-# Даёт доступ к объявлениям со всего KZ, которые не попали в региональный парсинг.
+# Даёт доступ ко ВСЕМ объявлениям каждой марки по всему Казахстану.
+# Список проверен автоматически — 80 активных брендов на 2026-04-21.
 BRAND_FEEDS = [
-    "toyota",
-    "vaz",          # ВАЗ (Lada)
-    "hyundai",
-    "mercedes-benz",
-    "kia",
-    "volkswagen",
-    "bmw",
-    "nissan",
-    "lexus",
-    "mitsubishi",
-    "audi",
-    "honda",
-    "chevrolet",
-    "daewoo",
-    "subaru",
+    # Японские
+    "toyota", "nissan", "honda", "mazda", "mitsubishi", "subaru",
+    "lexus", "infiniti", "isuzu", "daihatsu", "datsun", "suzuki",
+    # Корейские
+    "hyundai", "kia", "genesis", "ssang-yong", "ravon",
+    # Немецкие
+    "bmw", "mercedes-benz", "mercedes-maybach", "volkswagen",
+    "audi", "opel", "porsche", "mini",
+    # Французские/Итальянские
+    "renault", "peugeot", "citroen", "fiat", "maserati",
+    # Американские
+    "chevrolet", "ford", "cadillac", "dodge", "jeep",
+    "chrysler", "lincoln", "gmc", "hummer", "tesla",
+    # Британские
+    "land-rover", "jaguar", "bentley",
+    # Шведские
+    "volvo",
+    # Китайские
+    "chery", "geely", "geely-galaxy", "haval", "great-wall",
+    "byd", "changan", "dong-feng", "jac", "faw", "gac",
+    "hongqi", "li", "zeekr", "voyah", "wuling", "tank",
+    "deepal", "omoda", "jaecoo", "jetour", "exeed",
+    "lynk-and-co", "kaiyi", "soueast", "rox", "mg",
+    # Советские/Российские
+    "vaz",          # ВАЗ (Lada) — 18 706 объявлений
+    "gaz",          # ГАЗ — 4 155
+    "uaz",          # УАЗ — 758
+    "zaz",          # ЗАЗ
+    "moskvich",     # Москвич
+    # Разные
+    "seat", "skoda", "volvo", "lifan",
 ]
 
 # Итоговый список задач: сначала города (региональный охват),
-# затем бренды (национальный охват для топ-марок).
-ALL_FEEDS = CITIES + BRAND_FEEDS
+# затем все бренды (национальный охват, полное покрытие).
+# ON CONFLICT в save_listing обрабатывает дубли — только обновляет last_seen_at.
+ALL_FEEDS = CITIES + list(dict.fromkeys(BRAND_FEEDS))  # deduplicate preserving order
 
 # Маппинг типов кузова из колес-атрибутов
 BODY_TYPE_MAP = {
@@ -313,9 +331,11 @@ async def run_parser() -> tuple[int, int]:
 
     Фиды (города + бренды) запускаются батчами по CITY_CONCURRENCY одновременно.
     Каждый фид берёт свой коннект из asyncpg пула → нет конфликтов.
-    - Города (15 шт.): региональный охват
-    - Бренды (15 шт.): национальный фид топ-марок, pokrываeт объявления мимо городского парсинга
-    Итого 30 фидов × 5000 max = до 150 000 объявлений за один запуск.
+    - Города (15 шт.): региональный охват по крупным городам KZ
+    - Бренды (79 шт.): все бренды kolesa.kz — полный национальный охват
+    Итого 94 фида × 5000 max = до 470 000 объявлений за один запуск.
+    Дубли (объявление появляется в городском и брендовом фидах) — без проблем:
+    save_listing использует ON CONFLICT → только обновляет last_seen_at.
     """
     CITY_CONCURRENCY = 5  # сколько городов парсим одновременно
 
