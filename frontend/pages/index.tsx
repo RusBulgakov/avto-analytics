@@ -1,4 +1,4 @@
-// pages/index.tsx — Dashboard (trading terminal redesign, steps 1–3)
+// pages/index.tsx — Dashboard (trading terminal redesign, steps 1–5)
 import { useState } from 'react';
 import Head from 'next/head';
 import useSWR from 'swr';
@@ -9,11 +9,19 @@ import KPI from '@/components/ui/KPI';
 import Badge from '@/components/ui/Badge';
 import PriceChart from '@/components/charts/PriceChart';
 import BoxPlot from '@/components/charts/BoxPlot';
+import Heatmap, { type HeatmapCell } from '@/components/charts/Heatmap';
+import Funnel, { type FunnelBucket } from '@/components/charts/Funnel';
+import RecentFeed, { type RecentItem } from '@/components/feed/RecentFeed';
 
 import { analyticsApi } from '@/lib/api';
 import { fmt } from '@/lib/format';
 import { useUsdKzt } from '@/hooks/useUsdKzt';
-import { emptyFilters, type FilterState, type SummaryResponse, type BrandOverview } from '@/types/analytics';
+import {
+    emptyFilters,
+    type FilterState,
+    type SummaryResponse,
+    type BrandOverview,
+} from '@/types/analytics';
 
 function buildApiFilters(filters: FilterState) {
     const params: Record<string, unknown> = {
@@ -48,6 +56,36 @@ export default function Dashboard() {
         { keepPreviousData: true }
     );
 
+    // Heatmap: supports single brand filter (pass first element)
+    const singleBrand = filters.brand_id[0];
+    const heatmapParams: Record<string, unknown> = {};
+    if (singleBrand != null) heatmapParams.brand_id = singleBrand;
+    if (filters.city.length) heatmapParams.city = filters.city;
+    if (filters.source.length) heatmapParams.source = filters.source;
+
+    const { data: heatmap, isLoading: heatmapLoading } = useSWR<HeatmapCell[]>(
+        ['heatmap', heatmapParams],
+        () => analyticsApi.getHeatmap(heatmapParams),
+        { keepPreviousData: true }
+    );
+
+    const { data: liquidity, isLoading: liquidityLoading } = useSWR<FunnelBucket[]>(
+        ['liquidity', heatmapParams],
+        () => analyticsApi.getLiquidity(heatmapParams),
+        { keepPreviousData: true }
+    );
+
+    const recentParams: Record<string, unknown> = { limit: 10 };
+    if (singleBrand != null) recentParams.brand_id = singleBrand;
+    if (filters.city.length) recentParams.city = filters.city;
+    if (filters.source.length) recentParams.source = filters.source;
+
+    const { data: recent, isLoading: recentLoading } = useSWR<RecentItem[]>(
+        ['recent', recentParams],
+        () => analyticsApi.getRecent(recentParams),
+        { keepPreviousData: true, refreshInterval: 30_000 }
+    );
+
     const selectedBrandId = filters.brand_id.length === 1 ? filters.brand_id[0] : null;
     const boxplotParams = {
         city: filters.city.length ? filters.city : undefined,
@@ -65,8 +103,12 @@ export default function Dashboard() {
     const totalListings = summary?.active_listings;
     const totalBrands = summary?.total_brands;
     const avgPrice = summary?.avg_price_kzt;
-    // Placeholder "index" = avg price in млн ₸ (reuse until /analytics/price-index endpoint lands)
-    const indexValue = avgPrice ? (avgPrice / 1_000_000) : null;
+    const indexValue = avgPrice ? avgPrice / 1_000_000 : null;
+
+    // Fast-sale share = (0-3 + 4-7) / total — for liquidity KPI
+    const fastShare = liquidity
+        ? liquidity.filter(b => b.bucket === '0-3' || b.bucket === '4-7').reduce((s, b) => s + b.pct, 0)
+        : null;
 
     return (
         <>
@@ -111,15 +153,11 @@ export default function Dashboard() {
                             }
                         />
                         <KPI
-                            label="Марок в базе"
-                            value={
-                                summaryLoading && totalBrands == null
-                                    ? '…'
-                                    : totalBrands != null
-                                        ? fmt.int(totalBrands)
-                                        : '—'
-                            }
-                            foot={<span>{selectedBrandId ? 'выбрана 1 марка' : 'всего уникальных'}</span>}
+                            label="Ликвидность"
+                            value={fastShare != null ? fastShare.toFixed(0) : '…'}
+                            unit="%"
+                            inverted={false}
+                            foot={<span>{'продано <7 дней'}</span>}
                         />
                         <KPI
                             label="USD / KZT"
@@ -134,7 +172,7 @@ export default function Dashboard() {
                         />
                     </section>
 
-                    {/* ── Main chart + Sources ────────────────────────── */}
+                    {/* ── Main chart + Live feed ──────────────────────── */}
                     <section className="grid-2-1">
                         <div className="card">
                             <div className="card-h">
@@ -148,6 +186,69 @@ export default function Dashboard() {
                             </div>
                             <div className="card-b">
                                 <PriceChart data={priceHistory ?? []} loading={chartLoading} />
+                            </div>
+                        </div>
+
+                        <div className="card">
+                            <div className="card-h">
+                                <div>
+                                    <div className="card-title">Лента new listings</div>
+                                    <div className="card-sub">
+                                        {recentLoading && !recent ? 'загрузка…' : `обновляется каждые 30с · ${recent?.length ?? 0} шт.`}
+                                    </div>
+                                </div>
+                                <span className="live-dot" aria-hidden />
+                            </div>
+                            <div className="card-b flush">
+                                <RecentFeed data={recent ?? []} loading={recentLoading} />
+                            </div>
+                        </div>
+                    </section>
+
+                    {/* ── Heatmap + Funnel ────────────────────────────── */}
+                    <section className="grid-2-1">
+                        <div className="card">
+                            <div className="card-h">
+                                <div>
+                                    <div className="card-title">Матрица год × пробег</div>
+                                    <div className="card-sub">
+                                        {selectedBrandId ? 'для выбранной марки' : 'весь рынок'} · средняя цена или объём
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="card-b">
+                                <Heatmap data={heatmap ?? []} loading={heatmapLoading} />
+                            </div>
+                        </div>
+
+                        <div className="card">
+                            <div className="card-h">
+                                <div>
+                                    <div className="card-title">Воронка ликвидности</div>
+                                    <div className="card-sub">дней до закрытия · последние 180 дней</div>
+                                </div>
+                            </div>
+                            <div className="card-b">
+                                <Funnel data={liquidity ?? []} loading={liquidityLoading} />
+                            </div>
+                        </div>
+                    </section>
+
+                    {/* ── Boxplot + Sources ───────────────────────────── */}
+                    <section className="grid-2-1">
+                        <div className="card">
+                            <div className="card-h">
+                                <div>
+                                    <div className="card-title">
+                                        {selectedBrandId ? 'Распределение цен по моделям' : 'Распределение цен по маркам'}
+                                    </div>
+                                    <div className="card-sub">
+                                        Топ-10 · медиана, квартили, разброс
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="card-b">
+                                <BoxPlot data={boxplotData ?? []} loading={boxplotLoading} />
                             </div>
                         </div>
 
@@ -187,23 +288,6 @@ export default function Dashboard() {
                         </div>
                     </section>
 
-                    {/* ── Boxplot ─────────────────────────────────────── */}
-                    <section className="card">
-                        <div className="card-h">
-                            <div>
-                                <div className="card-title">
-                                    {selectedBrandId ? 'Распределение цен по моделям' : 'Распределение цен по маркам'}
-                                </div>
-                                <div className="card-sub">
-                                    {selectedBrandId ? 'Топ-10 моделей · медиана, квартили, разброс' : 'Топ-10 марок · медиана, квартили, разброс'}
-                                </div>
-                            </div>
-                        </div>
-                        <div className="card-b">
-                            <BoxPlot data={boxplotData ?? []} loading={boxplotLoading} />
-                        </div>
-                    </section>
-
                     {/* ── Top table ───────────────────────────────────── */}
                     <section className="card">
                         <div className="card-h">
@@ -211,7 +295,7 @@ export default function Dashboard() {
                                 <div className="card-title">
                                     {selectedBrandId ? 'Топ моделей по объявлениям' : 'Топ марок по объявлениям'}
                                 </div>
-                                <div className="card-sub">отсортировано по количеству активных объявлений</div>
+                                <div className="card-sub">отсортировано по количеству активных</div>
                             </div>
                         </div>
                         <div className="card-b flush">

@@ -543,6 +543,142 @@ button { font-family: inherit; }
   border-radius: 3px;
 }
 
+/* ═══ Recent feed ════════════════════════════════════════ */
+.recent-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  transition: background 0.12s;
+}
+.recent-row:last-child { border-bottom: none; }
+.recent-row:hover { background: var(--surface-2); }
+
+.recent-main { min-width: 0; }
+.recent-title {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.recent-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.recent-right {
+  display: grid;
+  grid-template-columns: auto auto;
+  row-gap: 2px;
+  column-gap: 10px;
+  align-items: baseline;
+  text-align: right;
+  white-space: nowrap;
+}
+.recent-price {
+  font-size: 13px;
+  font-weight: 500;
+}
+.recent-delta {
+  font-size: 11px;
+  display: inline-flex;
+  gap: 3px;
+  align-items: baseline;
+  justify-content: flex-end;
+}
+.recent-age {
+  font-size: 11px;
+  grid-column: 2 / 3;
+  text-align: right;
+}
+
+/* ═══ Funnel ═════════════════════════════════════════════ */
+.funnel-row {
+  display: grid;
+  grid-template-columns: 90px 1fr 70px 60px;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.funnel-row:last-child { border-bottom: none; }
+.funnel-label { font-size: 12px; color: var(--text-2); }
+.funnel-bar-wrap {
+  height: 20px;
+  background: var(--bg-2);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.funnel-bar {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.4s;
+}
+.funnel-count {
+  font-family: var(--mono);
+  font-size: 12px;
+  text-align: right;
+  color: var(--text);
+}
+.funnel-pct {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: right;
+}
+
+/* ═══ Heatmap ════════════════════════════════════════════ */
+.heatmap { display: grid; gap: 2px; }
+.heatmap-row {
+  display: grid;
+  gap: 2px;
+  align-items: center;
+}
+.hm-cell {
+  aspect-ratio: 1.35 / 1;
+  border-radius: 3px;
+  position: relative;
+  font-family: var(--mono);
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.9);
+  transition: transform 0.12s, outline-color 0.12s;
+  outline: 1px solid transparent;
+  cursor: default;
+}
+[data-theme='light'] .hm-cell { color: rgba(0, 0, 0, 0.75); }
+.hm-cell:hover {
+  outline-color: var(--text);
+  transform: scale(1.05);
+  z-index: 2;
+}
+.hm-empty {
+  background: var(--surface-2);
+  color: var(--text-dim);
+}
+.hm-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  text-align: right;
+  padding-right: 8px;
+}
+.hm-col-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  text-align: center;
+  padding-bottom: 4px;
+}
+
 /* ═══ Source bars ════════════════════════════════════════ */
 .src-row {
   display: grid;

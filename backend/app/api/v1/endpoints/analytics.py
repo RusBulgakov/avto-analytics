@@ -389,3 +389,214 @@ async def get_price_boxplot(
         result.append(d)
 
     return result
+
+
+# =============================================================================
+# NEW: Trading Terminal endpoints (heatmap, liquidity funnel, recent, cities)
+# =============================================================================
+
+@router.get("/heatmap", summary="Тепловая карта: год × пробег (ср. цена и объём)")
+async def get_heatmap(
+    brand_id: Optional[int] = Query(None),
+    model_id: Optional[int] = Query(None),
+    city: list[str] = Query(None),
+    source: list[str] = Query(None),
+):
+    """
+    Группирует активные объявления по (year, mileage_bucket) и возвращает
+    среднюю цену + объём. Используется для heatmap-матрицы на дашборде.
+    Бакеты пробега в тыс. км: 0-20, 20-50, 50-100, 100-150, 150-200, 200+
+    """
+    conditions = [
+        "l.is_active = TRUE",
+        "l.year BETWEEN 2008 AND EXTRACT(YEAR FROM NOW())::int",
+        "l.mileage_km IS NOT NULL",
+        "ph.price_kzt > 0",
+    ]
+    params: list = []
+    i = 1
+    if brand_id:
+        conditions.append(f"l.brand_id = ${i}"); params.append(brand_id); i += 1
+    if model_id:
+        conditions.append(f"l.model_id = ${i}"); params.append(model_id); i += 1
+    if city:
+        conditions.append(f"l.city = ANY(${i}::text[])"); params.append(city); i += 1
+    if source:
+        conditions.append(f"s.name = ANY(${i}::text[])"); params.append(source); i += 1
+
+    where = " AND ".join(conditions)
+    query = f"""
+        WITH latest_price AS (
+            SELECT DISTINCT ON (listing_id) listing_id, price_kzt
+            FROM price_history
+            WHERE recorded_at >= NOW() - INTERVAL '7 day'
+            ORDER BY listing_id, recorded_at DESC
+        )
+        SELECT
+            l.year AS year,
+            CASE
+                WHEN l.mileage_km < 20000  THEN '0-20'
+                WHEN l.mileage_km < 50000  THEN '20-50'
+                WHEN l.mileage_km < 100000 THEN '50-100'
+                WHEN l.mileage_km < 150000 THEN '100-150'
+                WHEN l.mileage_km < 200000 THEN '150-200'
+                ELSE '200+'
+            END AS mileage_bucket,
+            ROUND(AVG(ph.price_kzt))::bigint AS avg_price_kzt,
+            COUNT(*)::int AS volume
+        FROM listings l
+        JOIN sources s ON s.id = l.source_id
+        JOIN latest_price ph ON ph.listing_id = l.id
+        WHERE {where}
+        GROUP BY l.year, mileage_bucket
+        HAVING COUNT(*) >= 2
+        ORDER BY l.year DESC, mileage_bucket
+    """
+    async with DBSession() as conn:
+        rows = await conn.fetch(query, *params)
+    return [dict(r) for r in rows]
+
+
+@router.get("/liquidity", summary="Воронка ликвидности: дни на продажу")
+async def get_liquidity(
+    brand_id: Optional[int] = Query(None),
+    model_id: Optional[int] = Query(None),
+    city: list[str] = Query(None),
+    source: list[str] = Query(None),
+):
+    """
+    Распределение закрытых объявлений по времени жизни
+    (closed_at - first_seen_at) в 7 бакетах. Активные не считаются —
+    только те, что реально продались/скрылись.
+    """
+    conditions = [
+        "l.closed_at IS NOT NULL",
+        "l.first_seen_at IS NOT NULL",
+        "l.closed_at > l.first_seen_at",
+        "l.closed_at >= NOW() - INTERVAL '180 day'",
+    ]
+    params: list = []
+    i = 1
+    if brand_id:
+        conditions.append(f"l.brand_id = ${i}"); params.append(brand_id); i += 1
+    if model_id:
+        conditions.append(f"l.model_id = ${i}"); params.append(model_id); i += 1
+    if city:
+        conditions.append(f"l.city = ANY(${i}::text[])"); params.append(city); i += 1
+    if source:
+        conditions.append(f"s.name = ANY(${i}::text[])"); params.append(source); i += 1
+
+    where = " AND ".join(conditions)
+    query = f"""
+        WITH days AS (
+            SELECT EXTRACT(EPOCH FROM (l.closed_at - l.first_seen_at)) / 86400 AS d
+            FROM listings l
+            JOIN sources s ON s.id = l.source_id
+            WHERE {where}
+        )
+        SELECT bucket, COUNT(*)::int AS count FROM (
+            SELECT CASE
+                WHEN d < 4   THEN '0-3'
+                WHEN d < 8   THEN '4-7'
+                WHEN d < 15  THEN '8-14'
+                WHEN d < 31  THEN '15-30'
+                WHEN d < 61  THEN '31-60'
+                WHEN d < 91  THEN '61-90'
+                ELSE '90+'
+            END AS bucket
+            FROM days
+        ) t
+        GROUP BY bucket
+    """
+    async with DBSession() as conn:
+        rows = await conn.fetch(query, *params)
+
+    order = ['0-3', '4-7', '8-14', '15-30', '31-60', '61-90', '90+']
+    counts = {r['bucket']: r['count'] for r in rows}
+    total = sum(counts.values()) or 1
+    return [
+        {
+            "bucket": b,
+            "count": counts.get(b, 0),
+            "pct": round(100.0 * counts.get(b, 0) / total, 1),
+        }
+        for b in order
+    ]
+
+
+@router.get("/recent", summary="Лента свежих объявлений")
+async def get_recent(
+    limit: int = Query(8, ge=1, le=50),
+    brand_id: Optional[int] = Query(None),
+    city: list[str] = Query(None),
+    source: list[str] = Query(None),
+):
+    """Последние N активных объявлений, с дельтой цены относительно
+    первой записи price_history (положительная — выросла, отрицательная — снизилась)."""
+    conditions = ["l.is_active = TRUE"]
+    params: list = []
+    i = 1
+    if brand_id:
+        conditions.append(f"l.brand_id = ${i}"); params.append(brand_id); i += 1
+    if city:
+        conditions.append(f"l.city = ANY(${i}::text[])"); params.append(city); i += 1
+    if source:
+        conditions.append(f"s.name = ANY(${i}::text[])"); params.append(source); i += 1
+
+    where = " AND ".join(conditions)
+    query = f"""
+        WITH latest AS (
+            SELECT DISTINCT ON (listing_id) listing_id, price_kzt, recorded_at
+            FROM price_history
+            ORDER BY listing_id, recorded_at DESC
+        ),
+        first_price AS (
+            SELECT DISTINCT ON (listing_id) listing_id, price_kzt
+            FROM price_history
+            ORDER BY listing_id, recorded_at ASC
+        )
+        SELECT
+            l.id::text AS id,
+            b.name AS brand,
+            m.name AS model,
+            l.year,
+            lp.price_kzt AS price_kzt,
+            (lp.price_kzt - fp.price_kzt) AS price_delta_kzt,
+            l.mileage_km,
+            l.city,
+            s.name AS source,
+            l.listing_url,
+            l.first_seen_at
+        FROM listings l
+        JOIN sources s ON s.id = l.source_id
+        LEFT JOIN brands b ON b.id = l.brand_id
+        LEFT JOIN models m ON m.id = l.model_id
+        JOIN latest lp ON lp.listing_id = l.id
+        LEFT JOIN first_price fp ON fp.listing_id = l.id
+        WHERE {where}
+        ORDER BY l.first_seen_at DESC NULLS LAST
+        LIMIT ${i}
+    """
+    params.append(limit)
+    async with DBSession() as conn:
+        rows = await conn.fetch(query, *params)
+    return [dict(r) for r in rows]
+
+
+@router.get("/cities", summary="Список городов с числом объявлений")
+async def get_cities():
+    """Все города с количеством активных объявлений. Для фильтра."""
+    async with DBSession() as conn:
+        rows = await conn.fetch("""
+            SELECT
+                l.city AS name,
+                COUNT(*)::int AS listings_count
+            FROM listings l
+            WHERE l.is_active = TRUE
+              AND l.city IS NOT NULL
+              AND l.city <> ''
+            GROUP BY l.city
+            ORDER BY listings_count DESC
+            LIMIT 50
+        """)
+    return [dict(r) for r in rows]

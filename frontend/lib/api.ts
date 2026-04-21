@@ -34,6 +34,11 @@ export const analyticsApi = {
     getMarketOverview: (params?: Record<string, unknown>) => api.get('/api/v1/analytics/market-overview', { params }).then((r: any) => r.data),
     getProfitability: (params: Record<string, unknown>) => api.get('/api/v1/analytics/profitability', { params }).then((r: any) => r.data),
     getPriceBoxplot: (params?: Record<string, unknown>) => api.get('/api/v1/analytics/price-boxplot', { params }).then((r: any) => r.data),
+    // Trading-terminal endpoints
+    getHeatmap: (params?: Record<string, unknown>) => api.get('/api/v1/analytics/heatmap', { params }).then((r: any) => r.data),
+    getLiquidity: (params?: Record<string, unknown>) => api.get('/api/v1/analytics/liquidity', { params }).then((r: any) => r.data),
+    getRecent: (params?: Record<string, unknown>) => api.get('/api/v1/analytics/recent', { params }).then((r: any) => r.data),
+    getCities: () => api.get('/api/v1/analytics/cities').then((r: any) => r.data),
 };
 
 export const authApi = {
