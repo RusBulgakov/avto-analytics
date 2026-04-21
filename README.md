@@ -21,9 +21,10 @@
 ┌──────────────────────────────────────────────────────────┐
 │              GitHub Actions (ежедневно 06:00 Астана)     │
 │                                                          │
-│  refresh_proxy → ┌─ parse_kolesa  (параллельно,         │
-│                  ├─ parse_mycar    5 городов/батч)       │
-│                  ├─ parse_newauto                        │
+│  refresh_proxy → ┌─ parse_kolesa  (94 фида: 15 городов  │
+│                  │                + 79 брендов, batch=5) │
+│                  ├─ parse_mycar   (REST API)             │
+│                  ├─ parse_newauto (241 модель)           │
 │                  ├─ parse_avtorynok                      │
 │                  └─ parse_olx                            │
 │                       └→ deactivate_old_listings         │
@@ -56,11 +57,11 @@
 
 | Площадка | Метод | Объявлений/запуск | Время парсинга |
 |----------|-------|------------------|----------------|
-| [Kolesa.kz](https://kolesa.kz) | Embedded JSON из HTML (15 городов × 5 параллельно) | ~30 000 | ~12 мин |
+| [Kolesa.kz](https://kolesa.kz) | Embedded JSON из HTML (15 городов + 79 брендов = 94 фида, батчи по 5) | до ~470 000 | ~30 мин |
 | [mycar.kz](https://mycar.kz) | REST JSON API | ~5 400 | ~37 мин |
-| [newauto.kz](https://newauto.kz) | HTML парсинг (241 модель, slug-ID) | ~241 | ~1 мин |
-| [avtorynok.kz](https://avtorynok.kz) | HTML парсинг (стоп по повтору ID) | ~16 | ~1 мин |
-| [OLX.kz](https://olx.kz) | HTML парсинг (alphanumeric ID) | ~500 | ~15 мин |
+| [newauto.kz](https://newauto.kz) | HTML парсинг (241 модель, slug-ID `/cars/{brand}/{model}`) | ~241 | ~1 мин |
+| [avtorynok.kz](https://avtorynok.kz) | HTML парсинг (стоп по повтору ID, ~16 активных) | ~16 | ~1 мин |
+| [OLX.kz](https://olx.kz) | HTML парсинг (alphanumeric ID `IDqMNaw`) | ~500 | ~15 мин |
 
 ---
 
@@ -201,11 +202,11 @@ TELEGRAM_CHAT_ID=
 Джобы:
   1. refresh-proxies     — обновить пул прокси (~1 мин)
   2. parse-{source} ×5   — параллельный запуск всех парсеров
-     timeout: 330 мин (5.5ч) для kolesa, остальные быстрее
+     timeout: 330 мин (5.5ч)
   3. deactivate-old       — деактивировать объявления без обновления >48ч
 ```
 
-**Колеса запускается раньше других и завершается первым** (~12 мин) благодаря параллельному обходу 15 городов батчами по 5.
+**Kolesa** парсит 94 фида (15 городов + 79 брендов) батчами по 5 параллельно — ~30 мин, до 470k объявлений.
 
 ---
 
