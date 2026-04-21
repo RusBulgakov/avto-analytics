@@ -1,5 +1,4 @@
-// pages/index.tsx — Dashboard (trading terminal redesign, steps 1–5)
-import { useState } from 'react';
+// pages/index.tsx — Dashboard (trading terminal redesign, steps 1–6)
 import Head from 'next/head';
 import useSWR from 'swr';
 
@@ -11,13 +10,15 @@ import PriceChart from '@/components/charts/PriceChart';
 import BoxPlot from '@/components/charts/BoxPlot';
 import Heatmap, { type HeatmapCell } from '@/components/charts/Heatmap';
 import Funnel, { type FunnelBucket } from '@/components/charts/Funnel';
+import KZMap from '@/components/charts/KZMap';
 import RecentFeed, { type RecentItem } from '@/components/feed/RecentFeed';
 
 import { analyticsApi } from '@/lib/api';
 import { fmt } from '@/lib/format';
 import { useUsdKzt } from '@/hooks/useUsdKzt';
+import { useSyncFiltersWithUrl } from '@/hooks/useSyncFiltersWithUrl';
+import { useFilters, selectFilterState } from '@/store/filters';
 import {
-    emptyFilters,
     type FilterState,
     type SummaryResponse,
     type BrandOverview,
@@ -35,7 +36,11 @@ function buildApiFilters(filters: FilterState) {
 }
 
 export default function Dashboard() {
-    const [filters, setFilters] = useState<FilterState>(emptyFilters);
+    // Filters are kept in a zustand store that auto-syncs with the URL query.
+    useSyncFiltersWithUrl();
+    const filters = useFilters(selectFilterState);
+    const setAll = useFilters(s => s.setAll);
+    const setFilters = (next: FilterState) => setAll(next);
     const apiParams = buildApiFilters(filters);
 
     const { data: summary, isLoading: summaryLoading } = useSWR<SummaryResponse>(
@@ -96,6 +101,12 @@ export default function Dashboard() {
         ['price-boxplot', boxplotParams],
         () => analyticsApi.getPriceBoxplot(boxplotParams),
         { keepPreviousData: true }
+    );
+
+    const { data: geo, isLoading: geoLoading } = useSWR(
+        'geo',
+        () => analyticsApi.getGeo(),
+        { keepPreviousData: true, refreshInterval: 300_000 }
     );
 
     const { data: fx } = useUsdKzt();
@@ -234,21 +245,19 @@ export default function Dashboard() {
                         </div>
                     </section>
 
-                    {/* ── Boxplot + Sources ───────────────────────────── */}
+                    {/* ── KZ Map + Sources ────────────────────────────── */}
                     <section className="grid-2-1">
                         <div className="card">
                             <div className="card-h">
                                 <div>
-                                    <div className="card-title">
-                                        {selectedBrandId ? 'Распределение цен по моделям' : 'Распределение цен по маркам'}
-                                    </div>
+                                    <div className="card-title">География KZ</div>
                                     <div className="card-sub">
-                                        Топ-10 · медиана, квартили, разброс
+                                        активных объявлений по городам · клик → фильтр
                                     </div>
                                 </div>
                             </div>
                             <div className="card-b">
-                                <BoxPlot data={boxplotData ?? []} loading={boxplotLoading} />
+                                <KZMap data={geo ?? []} loading={geoLoading} />
                             </div>
                         </div>
 
@@ -285,6 +294,21 @@ export default function Dashboard() {
                                     <div style={{ color: 'var(--text-muted)', padding: 12 }}>Нет данных</div>
                                 )}
                             </div>
+                        </div>
+                    </section>
+
+                    {/* ── Boxplot (full width) ─────────────────────────── */}
+                    <section className="card">
+                        <div className="card-h">
+                            <div>
+                                <div className="card-title">
+                                    {selectedBrandId ? 'Распределение цен по моделям' : 'Распределение цен по маркам'}
+                                </div>
+                                <div className="card-sub">Топ-10 · медиана, квартили, разброс</div>
+                            </div>
+                        </div>
+                        <div className="card-b">
+                            <BoxPlot data={boxplotData ?? []} loading={boxplotLoading} />
                         </div>
                     </section>
 
