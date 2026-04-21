@@ -1043,7 +1043,7 @@ button { font-family: inherit; }
 
 .listing-grid {
   display: grid;
-  grid-template-columns: 1.3fr 1fr;
+  grid-template-columns: 1fr 1fr;
   gap: 14px;
 }
 

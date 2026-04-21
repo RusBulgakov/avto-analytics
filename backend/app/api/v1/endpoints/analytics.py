@@ -848,3 +848,102 @@ async def get_similar(listing_id: str = Query(...), limit: int = Query(8, ge=1, 
              base["year"] + 1 if base["year"] else 2100,
              mileage, limit)
     return [dict(r) for r in rows]
+
+
+# =============================================================================
+# Public profitability ranking (без PRO auth) — для страницы /profitability
+# =============================================================================
+
+@router.get(
+    "/profit-ranking",
+    summary="Рейтинг моделей по потенциалу маржи (публичный)"
+)
+async def get_profit_ranking(
+    limit: int = Query(20, ge=1, le=100),
+    min_volume: int = Query(10, ge=3, le=200, description="Мин. число активных объявлений"),
+):
+    """
+    Возвращает топ-N моделей по оценочной марже перепродажи.
+
+    Логика оценки (без учёта PRO-сигналов):
+      - "Buy"    = 25-й перцентиль текущих цен модели
+      - "Sell"   = медиана текущих цен модели
+      - Margin % = (sell - buy) / buy * 100
+      - Volume   = количество активных объявлений
+      - Days     = медианное время закрытия для этой модели (по закрытым за 180д)
+      - Risk     = 'low' (sample >= 40 & margin < 30), 'medium' (sample >= 20),
+                   'high' (sample < 20)
+
+    Данные берутся из price_history (последнее значение за 7 дней).
+    """
+    query = """
+        WITH latest AS (
+            SELECT DISTINCT ON (listing_id) listing_id, price_kzt
+            FROM price_history
+            WHERE recorded_at >= NOW() - INTERVAL '7 day'
+              AND price_kzt > 0
+            ORDER BY listing_id, recorded_at DESC
+        ),
+        sold AS (
+            SELECT l.brand_id, l.model_id,
+                   PERCENTILE_CONT(0.5) WITHIN GROUP (
+                       ORDER BY EXTRACT(EPOCH FROM (l.closed_at - l.first_seen_at)) / 86400
+                   ) AS median_days
+            FROM listings l
+            WHERE l.closed_at IS NOT NULL
+              AND l.first_seen_at IS NOT NULL
+              AND l.closed_at > l.first_seen_at
+              AND l.closed_at >= NOW() - INTERVAL '180 day'
+            GROUP BY l.brand_id, l.model_id
+        )
+        SELECT
+            b.name AS brand,
+            m.name AS model,
+            COUNT(*)::int AS volume,
+            PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY latest.price_kzt)::bigint AS buy_price,
+            PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY latest.price_kzt)::bigint AS sell_price,
+            PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY latest.price_kzt)::bigint AS high_price,
+            sold.median_days
+        FROM listings l
+        JOIN latest ON latest.listing_id = l.id
+        JOIN brands b ON b.id = l.brand_id
+        JOIN models m ON m.id = l.model_id
+        LEFT JOIN sold ON sold.brand_id = l.brand_id AND sold.model_id = l.model_id
+        WHERE l.is_active = TRUE
+        GROUP BY b.name, m.name, sold.median_days
+        HAVING COUNT(*) >= $1
+        ORDER BY
+            ((PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY latest.price_kzt) -
+              PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY latest.price_kzt))
+             / NULLIF(PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY latest.price_kzt), 0)) DESC NULLS LAST
+        LIMIT $2
+    """
+    async with DBSession() as conn:
+        rows = await conn.fetch(query, min_volume, limit)
+
+    result = []
+    for r in rows:
+        buy = r["buy_price"]
+        sell = r["sell_price"]
+        margin_pct = None
+        if buy and sell and buy > 0:
+            margin_pct = round(100.0 * (sell - buy) / buy, 1)
+        vol = r["volume"]
+        if vol >= 40 and (margin_pct is None or margin_pct < 30):
+            risk = "low"
+        elif vol >= 20:
+            risk = "medium"
+        else:
+            risk = "high"
+        result.append({
+            "brand": r["brand"],
+            "model": r["model"],
+            "volume": vol,
+            "buy_price": int(buy) if buy else None,
+            "sell_price": int(sell) if sell else None,
+            "high_price": int(r["high_price"]) if r["high_price"] else None,
+            "margin_pct": margin_pct,
+            "median_days_to_sell": round(float(r["median_days"]), 1) if r["median_days"] else None,
+            "risk": risk,
+        })
+    return result

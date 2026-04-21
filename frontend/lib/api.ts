@@ -44,6 +44,8 @@ export const analyticsApi = {
     getListing: (id: string) => api.get(`/api/v1/analytics/listing/${id}`).then((r: any) => r.data),
     getValuation: (id: string) => api.get('/api/v1/analytics/valuation', { params: { listing_id: id } }).then((r: any) => r.data),
     getSimilar: (id: string, limit = 8) => api.get('/api/v1/analytics/similar', { params: { listing_id: id, limit } }).then((r: any) => r.data),
+    // Public profitability ranking (no auth)
+    getProfitRanking: (params?: Record<string, unknown>) => api.get('/api/v1/analytics/profit-ranking', { params }).then((r: any) => r.data),
 };
 
 export const authApi = {

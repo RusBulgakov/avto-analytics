@@ -395,19 +395,11 @@ export default function ListingPage() {
                         </div>
                     </div>
 
-                    {/* ── Photo + specs + valuation ──────────────────────── */}
+                    {/* ── Specs + valuation ──────────────────────────────── */}
                     <div className="listing-grid">
-                        {/* ── Left column ──────────────────────────────── */}
+                        {/* ── Left column: specs ───────────────────────── */}
                         <div>
-                            <div className="photo-ph">НЕТ ФОТО</div>
-                            <div className="photo-strip">
-                                <div className="photo-ph">01</div>
-                                <div className="photo-ph">02</div>
-                                <div className="photo-ph">03</div>
-                                <div className="photo-ph">04</div>
-                            </div>
-
-                            <div className="card" style={{ marginTop: 14 }}>
+                            <div className="card">
                                 <div className="card-h">
                                     <div className="card-title">Характеристики</div>
                                 </div>
