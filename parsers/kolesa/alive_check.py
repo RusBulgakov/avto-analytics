@@ -118,14 +118,15 @@ async def run_alive_check() -> dict:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT id, listing_url
-            FROM listings
-            WHERE is_active = FALSE
-              AND source = 'kolesa'
-              AND listing_url IS NOT NULL
-              AND (last_seen_at IS NULL OR last_seen_at < NOW() - INTERVAL '3 days')
-              AND (last_seen_at IS NULL OR last_seen_at > NOW() - INTERVAL '30 days')
-            ORDER BY last_seen_at DESC NULLS LAST
+            SELECT l.id, l.listing_url
+            FROM listings l
+            JOIN sources s ON s.id = l.source_id
+            WHERE l.is_active = FALSE
+              AND s.name = 'kolesa'
+              AND l.listing_url IS NOT NULL
+              AND (l.last_seen_at IS NULL OR l.last_seen_at < NOW() - INTERVAL '3 days')
+              AND (l.last_seen_at IS NULL OR l.last_seen_at > NOW() - INTERVAL '30 days')
+            ORDER BY l.last_seen_at DESC NULLS LAST
             LIMIT $1
             """,
             BATCH_SIZE,
