@@ -34,11 +34,11 @@ function fmt(n: number) {
 }
 
 export default function BoxPlot({ data, loading }: Props) {
-    const ROW_H = 44;
-    const LABEL_W = 110;
+    const ROW_H = 26;
+    const LABEL_W = 92;
     const PAD_RIGHT = 24;
-    const PAD_TOP = 20;
-    const PAD_BOTTOM = 32;
+    const PAD_TOP = 12;
+    const PAD_BOTTOM = 20;
 
     const sorted = useMemo(() =>
         [...(data ?? [])].sort((a, b) => a.median - b.median),
@@ -83,9 +83,10 @@ export default function BoxPlot({ data, loading }: Props) {
         LABEL_W + ((v - globalMin) / (globalMax - globalMin)) * chartW;
 
     return (
-        <div style={{ width: '100%', overflowX: 'auto' }}>
+        <div style={{ width: '100%', maxWidth: 920, margin: '0 auto', overflowX: 'auto' }}>
             <svg
                 width="100%"
+                height={svgH}
                 viewBox={`0 0 800 ${svgH}`}
                 preserveAspectRatio="xMidYMid meet"
                 style={{ display: 'block', fontFamily: 'inherit' }}
@@ -123,7 +124,7 @@ export default function BoxPlot({ data, loading }: Props) {
                     const x_q3 = toX(d.q3, chartW);
                     const x_wh = toX(d.whisker_high, chartW);
                     const color = BRAND_COLORS[i % BRAND_COLORS.length];
-                    const boxH = 18;
+                    const boxH = 12;
 
                     return (
                         <g key={d.brand}>
