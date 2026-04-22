@@ -97,8 +97,8 @@
 
 - Не коммитить `.next/`, `node_modules/`, `__pycache__/`, `.env` (гитигнор покрывает, но проверь).
 - Не делать `git push --force` на `main` без явной просьбы пользователя.
-- Не трогать `airflow/` — это устаревший код, оставлен как archive.
 - Не менять `database/init.sql` без обновления миграций и README. Схема БД = публичный контракт между парсерами/бэком.
+- **Колонки `listings`:** `source_id` (FK), не `source` text! Для фильтра по площадке всегда JOIN `sources` или `WHERE source_id = (SELECT id FROM sources WHERE name='kolesa')`.
 - Не добавлять emoji в коммиты или код без явной просьбы пользователя.
 
 ---

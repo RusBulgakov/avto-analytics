@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-04-22 — alive_check SQL fix + airflow cleanup + bulk revive (`d0e9d1e` + ad-hoc SQL)
+
+### Fixed
+- **`parsers/kolesa/alive_check.py`** — первый прогон упал за 19 секунд с
+  `UndefinedColumnError: column "source" does not exist`. Схема listings использует
+  `source_id` (FK) — нет text-колонки `source`. SELECT перепиcан с
+  `JOIN sources s ON s.id = l.source_id WHERE s.name = 'kolesa'`.
+
+### Removed
+- **`airflow/dags/daily_parsers_dag.py`** + вся `airflow/` директория. Файлы оставались с марта как "deprecated", но активно вводили в заблуждение AI-агентов и читателей README — другие агенты делали выводы про "Airflow в 03:00 каждую ночь" хотя в проде планировщик = GitHub Actions.
+
+### Manual ops (не в коде, ad-hoc SQL на Neon)
+- **One-shot revive:** UPDATE 49,471 inactive kolesa-объявлений → `is_active=TRUE`. Критерий: `last_seen_at` за последние 7 дней + `first_seen_at` не старше 60 дней. Это историческая компенсация ложно-deactivated за период 48h-threshold-эры. Эффект: active 25,305 → 74,912 (×3), Toyota 4,264 → 13,144.
+
+### Changed
+- **`CLAUDE.md`** — добавлено правило про `source_id` vs `source`, чтобы агент в будущем не делал ту же ошибку. Убрано упоминание "не трогать airflow/" — папки больше нет.
+- **`README.md`** — убрано упоминание `airflow/` в структуре проекта.
+
+---
+
 ## 2026-04-22 — Documentation overhaul (`605d9cf`)
 
 ### Added

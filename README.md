@@ -169,7 +169,6 @@ TELEGRAM_CHAT_ID=
 ├── .github/workflows/
 │   ├── daily_parsers.yml          # Парсинг — каждые 6ч, 5 источников параллельно
 │   └── alive_check.yml            # Оживление inactive — каждые 12ч
-├── airflow/                       # Устаревший планировщик (не используется в prod)
 ├── backend/
 │   └── app/
 │       ├── api/v1/endpoints/      # analytics.py (все /api/v1/analytics/*), auth.py
