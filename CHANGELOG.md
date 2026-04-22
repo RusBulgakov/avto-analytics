@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-04-22 — Documentation overhaul (`605d9cf`)
+
+### Added
+- **`CLAUDE.md`** — канонические правила для AI-агентов: обязательное обновление CHANGELOG + README после каждой значимой доработки, чеклист что считается значимым, технические инварианты, do/don't list, процесс работы.
+- **`CHANGELOG.md`** — этот файл; полная история от `3ecf630` (2026-04-20) до текущего момента.
+
+### Changed
+- **`README.md`** — полностью actualized:
+  - Архитектурная диаграмма: 2 workflow вместо 1, 191 фид, Render + Neon
+  - Таблица источников: kolesa 94 → 191 фид, время 30мин → 2-3ч
+  - Секция workflow'ов: оба `daily_parsers.yml` + `alive_check.yml` с cron'ами
+  - API endpoints: было 4, стало 15 (добавлены heatmap, liquidity, recent, geo, listing/{id}, valuation, similar, profit-ranking, price-boxplot, auth/*)
+  - Project structure: новые frontend директории (layout/ui/charts/feed), все 6 страниц, zustand store, `alive_check.py`
+  - Known quirks: 5000/feed cap, 168h threshold, alive-check worker, static-export constraint
+
+---
+
 ## 2026-04-22 — Parser depth + alive-check revive (`e177dda`)
 
 ### Added
@@ -62,14 +79,32 @@
 - **Model page** (`/model?brand=...&model=...`) — детальный экран по модели.
 - **Listing page** (`/listing?id=...`) — детальный экран по объявлению с historic price chart, fair-price gauge, similar listings.
 
-### Added endpoints
-- `GET /api/v1/analytics/listing/{id}` — одно объявление с историей цены.
-- `GET /api/v1/analytics/valuation?listing_id=...` — fair-price оценка.
-- `GET /api/v1/analytics/similar?listing_id=...` — похожие объявления.
-- `GET /api/v1/analytics/geo` — координаты городов + объявления.
-
 ### Changed
 - Роутинг динамических страниц: вместо `[param]`-папок — query-string (`?id=`, `?brand=`), совместимо с `output: 'export'`.
+- zustand store для фильтров с двусторонней URL-синхронизацией (`useSyncFiltersWithUrl`).
+
+---
+
+## 2026-04-21 — Kolesa IP-block protection (`6ae4156`)
+
+### Changed
+- `CITY_CONCURRENCY`: 5 → 3 параллельных feed'а. GitHub Actions datacenter-IP триггерил kolesa anti-abuse при 5 × requests/3s = 100 req/min.
+- Inter-batch sleep 8–15 сек между группами фидов.
+- Early-stop: если все фиды в батче тайм-аутнули — IP, видимо, заблокирован, парсер завершается корректно (с тем что успел собрать).
+
+---
+
+## 2026-04-21 — Listing details + fair-price + geo (`06d9807`)
+
+### Added endpoints
+- `GET /api/v1/analytics/listing/{id}` — одно объявление с историей цены (`price_history` JOIN).
+- `GET /api/v1/analytics/valuation?listing_id=...` — fair-price оценка: p25/median/p75 по похожим объявлениям (тот же brand/model/year ±1/mileage ±20%).
+- `GET /api/v1/analytics/similar?listing_id=...&limit=8` — похожие объявления.
+- `GET /api/v1/analytics/geo` — список городов с координатами (x/y %), объявлениями и средней ценой для карты KZ.
+
+### Added frontend
+- Fair-price gauge + price history + similar listings на странице `/listing`.
+- Feed консумации `/geo` для KZMap v1 на дашборде.
 
 ---
 
@@ -114,6 +149,22 @@
 
 ---
 
+## 2026-04-20 — README sync before brand expansion (`c401e8b`)
+
+### Changed
+- README обновлён под 94 kolesa feed'а и все накопленные парсерные фиксы (до v1.0 инфраструктуры).
+
+---
+
+## 2026-04-19 — Три парсерных бага (`89d13e6`)
+
+### Fixed
+- **avtorynok.kz:** бесконечная пагинация — сайт отдаёт те же ~16 объявлений на любой page-num. Добавлен стоп по first-repeat через `seen_ids`.
+- **newauto.kz:** без числовых ID — используем slug-ID вида `bmw-x5` из `/catalog/{brand}/{model}`. Плюс обход TLS-fingerprint блокировки через `curl_cffi` Chrome impersonation.
+- **OLX.kz:** смена формата ID — `ID12345` → `IDqMNaw`. Регэксп обновлён на `r"ID([A-Za-z0-9]+)"`.
+
+---
+
 ## Ранее
 
-См. git log. До 2026-04-20 проект шёл без формального changelog.
+См. `git log` для истории до `89d13e6`. До 2026-04-19 проект шёл без формального changelog.
