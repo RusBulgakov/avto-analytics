@@ -83,10 +83,53 @@ BRAND_FEEDS = [
     "seat", "skoda", "volvo", "lifan",
 ]
 
+# Модельные фиды для марок-тяжеловесов, где brand-level feed упирается
+# в лимит kolesa.kz = 250 страниц × 20 = 5000 объявлений. Без этих subfeed'ов
+# 80–90 % Toyota / Lada / Hyundai не попадают в парсинг и протухают как inactive.
+# Slug = `brand/model` → URL `/cars/{brand}/{model}/`. Если slug не существует на
+# kolesa — фид просто вернёт 0 объявлений и парсер идёт дальше (no-op, safe).
+MODEL_FEEDS = [
+    # Toyota (топ 10 моделей по количеству объявлений в KZ)
+    "toyota/camry", "toyota/corolla",
+    "toyota/land-cruiser", "toyota/land-cruiser-prado", "toyota/land-cruiser-100", "toyota/land-cruiser-200",
+    "toyota/rav4", "toyota/highlander", "toyota/hilux", "toyota/alphard",
+    "toyota/avensis", "toyota/vitz", "toyota/ipsum", "toyota/harrier",
+    # Lada — реально большие объёмы, нужны раздельные фиды по поколениям
+    "vaz/2107", "vaz/2114", "vaz/2110", "vaz/2112", "vaz/2115", "vaz/2106", "vaz/2109", "vaz/2121",
+    "vaz/priora", "vaz/vesta", "vaz/granta", "vaz/kalina", "vaz/largus", "vaz/niva", "vaz/xray",
+    # Hyundai
+    "hyundai/accent", "hyundai/elantra", "hyundai/sonata", "hyundai/tucson",
+    "hyundai/santa-fe", "hyundai/creta", "hyundai/solaris", "hyundai/getz", "hyundai/starex", "hyundai/i30",
+    # Kia
+    "kia/rio", "kia/cerato", "kia/sportage", "kia/sorento", "kia/optima", "kia/picanto", "kia/k5",
+    # Mercedes-Benz — slug на kolesa именно mercedes-benz
+    "mercedes-benz/e-class", "mercedes-benz/c-class", "mercedes-benz/s-class",
+    "mercedes-benz/ml-class", "mercedes-benz/gl-class", "mercedes-benz/g-class",
+    # BMW
+    "bmw/3-series", "bmw/5-series", "bmw/7-series", "bmw/x5", "bmw/x3", "bmw/x6",
+    # Volkswagen
+    "volkswagen/polo", "volkswagen/tiguan", "volkswagen/passat", "volkswagen/jetta", "volkswagen/touareg",
+    "volkswagen/golf",
+    # Chevrolet — Cobalt / Nexia в KZ массовый сегмент
+    "chevrolet/cobalt", "chevrolet/cruze", "chevrolet/aveo", "chevrolet/lacetti",
+    "chevrolet/spark", "chevrolet/captiva", "chevrolet/niva",
+    # Nissan
+    "nissan/x-trail", "nissan/qashqai", "nissan/almera", "nissan/patrol", "nissan/murano", "nissan/juke",
+    # Lexus
+    "lexus/rx", "lexus/lx", "lexus/es", "lexus/gx",
+    # Daewoo Nexia — массовый бюджет-сегмент в KZ
+    "daewoo/nexia", "daewoo/matiz",
+    # Skoda / Mitsubishi / Audi / Ford
+    "skoda/octavia", "skoda/rapid", "skoda/superb",
+    "mitsubishi/outlander", "mitsubishi/pajero", "mitsubishi/lancer", "mitsubishi/asx",
+    "audi/a6", "audi/a4", "audi/q7", "audi/q5",
+    "ford/focus", "ford/escape", "ford/explorer",
+]
+
 # Итоговый список задач: сначала города (региональный охват),
-# затем все бренды (национальный охват, полное покрытие).
+# затем все бренды (национальный охват), затем тяжёлые модели (обход лимита 5000/фид).
 # ON CONFLICT в save_listing обрабатывает дубли — только обновляет last_seen_at.
-ALL_FEEDS = CITIES + list(dict.fromkeys(BRAND_FEEDS))  # deduplicate preserving order
+ALL_FEEDS = CITIES + list(dict.fromkeys(BRAND_FEEDS)) + MODEL_FEEDS
 
 # Маппинг типов кузова из колес-атрибутов
 BODY_TYPE_MAP = {
@@ -287,6 +330,8 @@ async def parse_city(city: str, session, pool) -> tuple[int, int]:
     """Парсит все страницы для одного города. Каждый вызов берёт свой коннект из пула."""
     saved = 0
     new_saved = 0
+    consecutive_errors = 0
+    MAX_CONSECUTIVE_ERRORS = 5  # >5 подряд = интернет лежит, нет смысла продолжать
     for page in range(1, MAX_PAGES_PER_CITY + 1):
         if city == "all":
             url = f"{BASE_URL}/cars/" if page == 1 else f"{BASE_URL}/cars/?page={page}"
@@ -298,9 +343,21 @@ async def parse_city(city: str, session, pool) -> tuple[int, int]:
             # до 45s задержки на каждую страницу из-за retry-цикла — итого 5+ часов
             # на 15 городов. curl_cffi с Chrome impersonation проходит напрямую.
             html = await fetch(url, use_proxy=False, session=session)
+            consecutive_errors = 0  # сбрасываем счётчик при успехе
         except Exception as e:
-            logger.error("kolesa %s стр %d: %s", city, page, e)
-            break
+            consecutive_errors += 1
+            if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                logger.error(
+                    "kolesa %s: %d ошибок подряд — интернет недоступен, прерываем фид",
+                    city, consecutive_errors,
+                )
+                break
+            logger.warning(
+                "kolesa %s стр %d: ошибка сети (%s) — пропускаем [%d/%d]",
+                city, page, e, consecutive_errors, MAX_CONSECUTIVE_ERRORS,
+            )
+            await asyncio.sleep(random.uniform(5.0, 10.0))
+            continue
 
         items_raw = _extract_items_from_html(html)
         if not items_raw:
@@ -309,15 +366,32 @@ async def parse_city(city: str, session, pool) -> tuple[int, int]:
 
         items = [_parse_item(o) for o in items_raw]
         items = [i for i in items if i and i["external_id"]]
-        async with pool.acquire() as conn:
-            for item in items:
-                try:
-                    _, is_new = await save_listing(conn, item)
-                    saved += 1
-                    if is_new:
-                        new_saved += 1
-                except Exception as e:
-                    logger.warning("kolesa: не удалось сохранить %s: %s", item.get("external_id"), e)
+
+        # Сохраняем с одним retry при ошибке соединения:
+        # если соединение умерло (Neon/PgBouncer timeout) — берём свежее из пула.
+        for attempt in range(2):
+            failed_items = []
+            async with pool.acquire() as conn:
+                for item in items:
+                    try:
+                        _, is_new = await save_listing(conn, item)
+                        saved += 1
+                        if is_new:
+                            new_saved += 1
+                    except Exception as e:
+                        err = str(e)
+                        if "released back to the pool" in err or "connection was closed" in err or "closed in the middle" in err:
+                            # Мёртвое соединение — добавим в retry-список, выйдем из блока
+                            failed_items.append(item)
+                        else:
+                            logger.warning("kolesa: не удалось сохранить %s: %s", item.get("external_id"), e)
+            if not failed_items:
+                break
+            if attempt == 0:
+                logger.warning("kolesa %s стр %d: %d ошибок соединения, retry со свежим коннектом", city, page, len(failed_items))
+                items = failed_items  # повторим только упавшие
+            else:
+                logger.error("kolesa %s стр %d: %d объявлений потеряно после retry", city, page, len(failed_items))
 
         logger.info("kolesa %s стр %d: %d объявлений", city, page, len(items))
 
@@ -343,8 +417,8 @@ async def run_parser() -> tuple[int, int]:
     CITY_CONCURRENCY = 3
 
     logger.info(
-        "Старт парсинга kolesa.kz (%d городов + %d брендов = %d фидов, по %d одновременно)",
-        len(CITIES), len(BRAND_FEEDS), len(ALL_FEEDS), CITY_CONCURRENCY,
+        "Старт парсинга kolesa.kz (%d городов + %d брендов + %d моделей = %d фидов, по %d одновременно)",
+        len(CITIES), len(BRAND_FEEDS), len(MODEL_FEEDS), len(ALL_FEEDS), CITY_CONCURRENCY,
     )
 
     from curl_cffi import requests
@@ -388,6 +462,8 @@ async def run_parser() -> tuple[int, int]:
 
 
 if __name__ == "__main__":
+    from dotenv import load_dotenv
+    load_dotenv()  # грузит .env из текущей директории (для локального запуска)
     logging.basicConfig(level=logging.INFO)
     import time
     from parsers.common.notifier import send_success, send_error

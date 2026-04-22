@@ -59,6 +59,12 @@ async def get_pool() -> asyncpg.Pool:
                 # где этого statement нет → InvalidSQLStatementNameError.
                 # Отключаем кэш — запросы чуть медленнее, но стабильны.
                 statement_cache_size=0,
+                # Neon/PgBouncer закрывает idle-соединения примерно через 5 мин.
+                # max_inactive_connection_lifetime=60 заставляет asyncpg
+                # пересоздавать соединения, пролежавшие в пуле >60с, — до того
+                # как PgBouncer успеет их убить. Без этого при долгих парсингах
+                # пул отдаёт мёртвые коннекты → "connection has been released".
+                max_inactive_connection_lifetime=60.0,
             )
         else:
             # Режим Docker: отдельные переменные окружения
@@ -181,11 +187,18 @@ async def save_listing(conn: asyncpg.Connection, data: dict) -> str:
     return listing_id, is_new
 
 
-async def deactivate_old_listings(conn: asyncpg.Connection, hours_threshold: int = 48) -> int:
+async def deactivate_old_listings(conn: asyncpg.Connection, hours_threshold: int = 168) -> int:
     """
     Деактивирует объявления, которые не обновлялись больше `hours_threshold` часов.
     Проставляет is_active = FALSE и closed_at = NOW().
     Возвращает количество деактивированных записей.
+
+    Default 168h (7 дней). Раньше был 48h, но kolesa.kz глушит пагинацию
+    на 250 страниц (= 5000 объявлений на feed), из-за чего модели-тяжеловесы
+    (Toyota, Lada, Hyundai) не полностью покрываются за один проход парсера
+    и их живые объявления ошибочно помечались неактивными после 2 суток.
+    С 7-дневным окном живые объявления успевают попасть хотя бы в один из
+    4 ежедневных проходов парсера.
     """
     closed_count = await conn.execute(
         """

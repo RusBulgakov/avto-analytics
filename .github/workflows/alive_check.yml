@@ -1,0 +1,45 @@
+name: Alive Check (Kolesa)
+
+# Отдельный workflow для "оживления" inactive объявлений: берёт батч
+# из БД и GET'ит их listing_url, помечает is_active=TRUE если страница жива.
+# Запускается чаще основного парсера — его единственная задача быстро
+# убирать false-negative deactivations.
+
+on:
+  schedule:
+    - cron: '30 */12 * * *'  # 00:30 и 12:30 UTC (05:30 и 17:30 Астана)
+  workflow_dispatch:
+    inputs:
+      batch:
+        description: 'Сколько listings проверить за раз (default 5000)'
+        required: false
+        default: '5000'
+
+env:
+  PYTHONPATH: ${{ github.workspace }}
+
+jobs:
+  alive-check:
+    name: Revive inactive kolesa listings
+    runs-on: ubuntu-latest
+    timeout-minutes: 120  # 2 часа — типичный прогон укладывается в 60-80 мин
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: parsers/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r parsers/requirements.txt
+
+      - name: Run alive check
+        run: python -m parsers.kolesa.alive_check
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ALIVE_CHECK_BATCH: ${{ github.event.inputs.batch || '5000' }}
+          ALIVE_CHECK_CONCURRENCY: '2'
+          ALIVE_CHECK_DELAY_MIN: '1.2'
+          ALIVE_CHECK_DELAY_MAX: '2.5'
