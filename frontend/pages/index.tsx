@@ -210,7 +210,10 @@ export default function Dashboard() {
                                 </div>
                                 <span className="live-dot" aria-hidden />
                             </div>
-                            <div className="card-b flush">
+                            <div
+                                className="card-b flush"
+                                style={{ maxHeight: 360, overflowY: 'auto' }}
+                            >
                                 <RecentFeed data={recent ?? []} loading={recentLoading} />
                             </div>
                         </div>
