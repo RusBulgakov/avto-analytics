@@ -13,13 +13,16 @@ router = APIRouter(prefix="/analytics", tags=["Analytics"])
 
 
 @router.get("/brands", summary="Список марок (публичный)")
-async def get_brands():
-    """Возвращает все марки с количеством активных объявлений."""
+async def get_brands(
+    include_inactive: bool = Query(False, description="Включать снятые объявления"),
+):
+    """Возвращает все марки с количеством объявлений (по умолчанию — только активные)."""
+    join_filter = "" if include_inactive else "AND l.is_active = TRUE"
     async with DBSession() as conn:
-        rows = await conn.fetch("""
+        rows = await conn.fetch(f"""
             SELECT b.id, b.name, b.slug, COUNT(l.id) AS listings_count
             FROM brands b
-            LEFT JOIN listings l ON l.brand_id = b.id AND l.is_active = TRUE
+            LEFT JOIN listings l ON l.brand_id = b.id {join_filter}
             GROUP BY b.id, b.name, b.slug
             ORDER BY listings_count DESC
         """)
@@ -27,13 +30,17 @@ async def get_brands():
 
 
 @router.get("/models", summary="Список моделей по марке (публичный)")
-async def get_models(brand_id: int = Query(..., description="ID марки")):
+async def get_models(
+    brand_id: int = Query(..., description="ID марки"),
+    include_inactive: bool = Query(False, description="Включать снятые объявления"),
+):
     """Возвращает модели для указанной марки."""
+    join_filter = "" if include_inactive else "AND l.is_active = TRUE"
     async with DBSession() as conn:
-        rows = await conn.fetch("""
+        rows = await conn.fetch(f"""
             SELECT m.id, m.name, m.slug, COUNT(l.id) AS listings_count
             FROM models m
-            LEFT JOIN listings l ON l.model_id = m.id AND l.is_active = TRUE
+            LEFT JOIN listings l ON l.model_id = m.id {join_filter}
             WHERE m.brand_id = $1
             GROUP BY m.id, m.name, m.slug
             ORDER BY listings_count DESC
@@ -50,12 +57,15 @@ async def get_price_history(
     city: list[str] = Query(None),
     source: list[str] = Query(None, description="kolesa, olx, mycar и т.д."),
     period_days: int = Query(90, ge=7, le=365, description="Глубина истории в днях"),
+    include_inactive: bool = Query(False, description="Учитывать снятые объявления"),
 ):
     """
     Базовый публичный график цен. Возвращает daily/weekly среднее за period_days.
     Поддерживает множественный выбор (массивы) для фильтров.
     """
     conditions = ["ph.recorded_at >= NOW() - ($1 * INTERVAL '1 day')"]
+    if not include_inactive:
+        conditions.append("l.is_active = TRUE")
     params: list = [period_days]
     i = 2
 
@@ -158,11 +168,14 @@ async def get_summary(
     brand_id: list[int] = Query(None),
     city: list[str] = Query(None),
     source: list[str] = Query(None),
-    year: list[int] = Query(None)
+    year: list[int] = Query(None),
+    include_inactive: bool = Query(False, description="Считать также снятые объявления"),
 ):
     """Возвращает точные значения для верхних счетчиков: объявления, бренды, средняя цена и источники."""
-    
-    conditions = ["l.is_active = TRUE"]
+
+    conditions = []
+    if not include_inactive:
+        conditions.append("l.is_active = TRUE")
     params = []
     i = 1
 
@@ -175,11 +188,11 @@ async def get_summary(
     if year:
         conditions.append(f"l.year = ANY(${i}::int[])"); params.append(year); i += 1
 
-    where = " AND ".join(conditions)
+    where = " AND ".join(conditions) if conditions else "TRUE"
 
     async with DBSession() as conn:
         counts = await conn.fetchrow(f"""
-             SELECT 
+             SELECT
                 COUNT(DISTINCT l.id) as active_listings,
                 COUNT(DISTINCT l.brand_id) as total_brands,
                 ROUND(AVG(ph.price_kzt))::bigint as avg_price_kzt
@@ -189,7 +202,7 @@ async def get_summary(
                 AND ph.recorded_at >= NOW() - INTERVAL '3 day'
              WHERE {where}
         """, *params)
-        
+
         sources_data = await conn.fetch(f"""
             SELECT s.name, COUNT(l.id) as count
             FROM sources s
@@ -212,11 +225,14 @@ async def market_overview(
     brand_id: list[int] = Query(None, description="Опциональный массив ID марок"),
     city: list[str] = Query(None),
     source: list[str] = Query(None),
-    year: list[int] = Query(None)
+    year: list[int] = Query(None),
+    include_inactive: bool = Query(False, description="Считать также снятые объявления"),
 ):
     """Топ-20 марок по количеству объявлений + средняя цена. С учетом фильтров."""
-    
-    conditions = ["l.is_active = TRUE"]
+
+    conditions = []
+    if not include_inactive:
+        conditions.append("l.is_active = TRUE")
     params = []
     i = 1
 
@@ -229,7 +245,7 @@ async def market_overview(
     if year:
         conditions.append(f"l.year = ANY(${i}::int[])"); params.append(year); i += 1
 
-    where = " AND ".join(conditions)
+    where = " AND ".join(conditions) if conditions else "TRUE"
 
     async with DBSession() as conn:
         if brand_id and len(brand_id) == 1:
@@ -279,13 +295,17 @@ async def get_price_boxplot(
     city: list[str] = Query(None),
     source: list[str] = Query(None),
     year: list[int] = Query(None),
+    include_inactive: bool = Query(False, description="Учитывать снятые объявления"),
 ):
     """
-    Без brand_id → топ-10 марок по количеству активных объявлений.
+    Без brand_id → топ-10 марок по количеству объявлений.
     С brand_id  → топ-10 моделей выбранной марки.
     Возвращает min, Q1, median, Q3, max + count (совпадает с market-overview).
     """
-    conditions = ["l.is_active = TRUE", "ph.price_kzt > 0"]
+    active_filter = "" if include_inactive else "AND l.is_active = TRUE"
+    conditions = ["ph.price_kzt > 0"]
+    if not include_inactive:
+        conditions.append("l.is_active = TRUE")
     params: list = []
     i = 1
 
@@ -307,7 +327,7 @@ async def get_price_boxplot(
                 SELECT m.id, m.name, COUNT(l.id) AS listing_count
                 FROM models m
                 JOIN listings l ON l.model_id = m.id
-                WHERE l.is_active = TRUE {brand_filter}
+                WHERE 1=1 {active_filter} {brand_filter}
                 GROUP BY m.id, m.name
                 ORDER BY listing_count DESC
                 LIMIT 10
@@ -344,7 +364,7 @@ async def get_price_boxplot(
                 SELECT b.id, b.name, COUNT(l.id) AS listing_count
                 FROM brands b
                 JOIN listings l ON l.brand_id = b.id
-                WHERE l.is_active = TRUE
+                WHERE 1=1 {active_filter}
                 GROUP BY b.id, b.name
                 ORDER BY listing_count DESC
                 LIMIT 10
@@ -401,18 +421,20 @@ async def get_heatmap(
     model_id: Optional[int] = Query(None),
     city: list[str] = Query(None),
     source: list[str] = Query(None),
+    include_inactive: bool = Query(False, description="Учитывать снятые объявления"),
 ):
     """
-    Группирует активные объявления по (year, mileage_bucket) и возвращает
+    Группирует объявления по (year, mileage_bucket) и возвращает
     среднюю цену + объём. Используется для heatmap-матрицы на дашборде.
     Бакеты пробега в тыс. км: 0-20, 20-50, 50-100, 100-150, 150-200, 200+
     """
     conditions = [
-        "l.is_active = TRUE",
         "l.year BETWEEN 2008 AND EXTRACT(YEAR FROM NOW())::int",
         "l.mileage_km IS NOT NULL",
         "ph.price_kzt > 0",
     ]
+    if not include_inactive:
+        conditions.append("l.is_active = TRUE")
     params: list = []
     i = 1
     if brand_id:
@@ -584,17 +606,20 @@ async def get_recent(
 
 
 @router.get("/cities", summary="Список городов с числом объявлений")
-async def get_cities():
-    """Все города с количеством активных объявлений. Для фильтра."""
+async def get_cities(
+    include_inactive: bool = Query(False, description="Учитывать снятые объявления"),
+):
+    """Все города с количеством объявлений. Для фильтра."""
+    active_filter = "" if include_inactive else "AND l.is_active = TRUE"
     async with DBSession() as conn:
-        rows = await conn.fetch("""
+        rows = await conn.fetch(f"""
             SELECT
                 l.city AS name,
                 COUNT(*)::int AS listings_count
             FROM listings l
-            WHERE l.is_active = TRUE
-              AND l.city IS NOT NULL
+            WHERE l.city IS NOT NULL
               AND l.city <> ''
+              {active_filter}
             GROUP BY l.city
             ORDER BY listings_count DESC
             LIMIT 50
@@ -634,12 +659,15 @@ _CITY_COORDS: dict[str, tuple[str, float, float]] = {
 
 
 @router.get("/geo", summary="Карта KZ: координаты городов + объявления и ср. цена")
-async def get_geo():
-    """Возвращает список городов из словаря _CITY_COORDS с количеством активных
-    объявлений и средней ценой. Города БЕЗ координат отбрасываются."""
+async def get_geo(
+    include_inactive: bool = Query(False, description="Учитывать снятые объявления"),
+):
+    """Возвращает список городов из словаря _CITY_COORDS с количеством объявлений
+    и средней ценой. Города БЕЗ координат отбрасываются."""
+    active_filter = "" if include_inactive else "AND l.is_active = TRUE"
     slugs = list(_CITY_COORDS.keys())
     async with DBSession() as conn:
-        rows = await conn.fetch("""
+        rows = await conn.fetch(f"""
             SELECT
                 LOWER(l.city) AS slug,
                 COUNT(DISTINCT l.id)::int AS listings,
@@ -648,8 +676,8 @@ async def get_geo():
             JOIN sources s ON s.id = l.source_id
             LEFT JOIN price_history ph ON ph.listing_id = l.id
                 AND ph.recorded_at >= NOW() - INTERVAL '7 day'
-            WHERE l.is_active = TRUE
-              AND LOWER(l.city) = ANY($1::text[])
+            WHERE LOWER(l.city) = ANY($1::text[])
+              {active_filter}
             GROUP BY LOWER(l.city)
         """, slugs)
     by_slug = {r["slug"]: r for r in rows}
@@ -861,6 +889,8 @@ async def get_similar(listing_id: str = Query(...), limit: int = Query(8, ge=1, 
 async def get_profit_ranking(
     limit: int = Query(20, ge=1, le=100),
     min_volume: int = Query(10, ge=3, le=200, description="Мин. число активных объявлений"),
+    year_from: int = Query(None, ge=1990, le=2030, description="Год выпуска от"),
+    year_to: int = Query(None, ge=1990, le=2030, description="Год выпуска до"),
 ):
     """
     Возвращает топ-N моделей по оценочной марже перепродажи.
@@ -876,7 +906,17 @@ async def get_profit_ranking(
 
     Данные берутся из price_history (последнее значение за 7 дней).
     """
-    query = """
+    # Динамически добавляем условие по году если задан диапазон
+    year_filter = ""
+    params: list = [min_volume, limit]
+    if year_from:
+        params.append(year_from)
+        year_filter += f" AND l.year >= ${len(params)}"
+    if year_to:
+        params.append(year_to)
+        year_filter += f" AND l.year <= ${len(params)}"
+
+    query = f"""
         WITH latest AS (
             SELECT DISTINCT ON (listing_id) listing_id, price_kzt
             FROM price_history
@@ -885,7 +925,7 @@ async def get_profit_ranking(
             ORDER BY listing_id, recorded_at DESC
         ),
         sold AS (
-            SELECT l.brand_id, l.model_id,
+            SELECT l.brand_id, l.model_id, l.year,
                    PERCENTILE_CONT(0.5) WITHIN GROUP (
                        ORDER BY EXTRACT(EPOCH FROM (l.closed_at - l.first_seen_at)) / 86400
                    ) AS median_days
@@ -894,11 +934,12 @@ async def get_profit_ranking(
               AND l.first_seen_at IS NOT NULL
               AND l.closed_at > l.first_seen_at
               AND l.closed_at >= NOW() - INTERVAL '180 day'
-            GROUP BY l.brand_id, l.model_id
+            GROUP BY l.brand_id, l.model_id, l.year
         )
         SELECT
             b.name AS brand,
             m.name AS model,
+            l.year::int AS year,
             COUNT(*)::int AS volume,
             PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY latest.price_kzt)::bigint AS buy_price,
             PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY latest.price_kzt)::bigint AS sell_price,
@@ -908,9 +949,9 @@ async def get_profit_ranking(
         JOIN latest ON latest.listing_id = l.id
         JOIN brands b ON b.id = l.brand_id
         JOIN models m ON m.id = l.model_id
-        LEFT JOIN sold ON sold.brand_id = l.brand_id AND sold.model_id = l.model_id
-        WHERE l.is_active = TRUE
-        GROUP BY b.name, m.name, sold.median_days
+        LEFT JOIN sold ON sold.brand_id = l.brand_id AND sold.model_id = l.model_id AND sold.year = l.year
+        WHERE l.is_active = TRUE AND l.year IS NOT NULL{year_filter}
+        GROUP BY b.name, m.name, l.year, sold.median_days
         HAVING COUNT(*) >= $1
         ORDER BY
             ((PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY latest.price_kzt) -
@@ -919,7 +960,7 @@ async def get_profit_ranking(
         LIMIT $2
     """
     async with DBSession() as conn:
-        rows = await conn.fetch(query, min_volume, limit)
+        rows = await conn.fetch(query, *params)
 
     result = []
     for r in rows:
@@ -938,6 +979,7 @@ async def get_profit_ranking(
         result.append({
             "brand": r["brand"],
             "model": r["model"],
+            "year": r["year"],
             "volume": vol,
             "buy_price": int(buy) if buy else None,
             "sell_price": int(sell) if sell else None,

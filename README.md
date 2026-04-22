@@ -307,6 +307,8 @@ users / subscription_plans / user_subscriptions             — пользова
 
 Все аналитические endpoint'ы поддерживают фильтры: `brand_id[]`, `model_id[]`, `city[]`, `source[]`, `period_days`.
 
+**`include_inactive: bool`** (default `false`) — поддерживается endpoint'ами `/brands`, `/models`, `/summary`, `/market-overview`, `/price-history`, `/price-boxplot`, `/heatmap`, `/cities`, `/geo`. Управляется toggle "Активные / Все" в FilterBar. По умолчанию возвращаются только `is_active=TRUE` объявления; при `true` — вся история. `/recent`, `/liquidity`, `/profit-ranking`, `/listing/{id}`, `/valuation`, `/similar` намеренно не реагируют (см. CHANGELOG).
+
 ### Справочники
 
 | Метод | Путь | Описание |

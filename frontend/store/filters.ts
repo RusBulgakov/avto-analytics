@@ -13,6 +13,7 @@ export interface FiltersStore extends FilterState {
     setMileage: (mileage: NumberTuple | null) => void;
     setPeriod: (period: Period) => void;
     setSource: (source: string[]) => void;
+    setIncludeInactive: (v: boolean) => void;
     setAll: (next: Partial<FilterState>) => void;
     reset: () => void;
     syncFromUrl: (search: string) => void;
@@ -31,6 +32,8 @@ export function filtersToQuery(f: FilterState): Record<string, string> {
     // period: skip default (90); 'all' encoded as "all"
     if (f.period !== 90) q.period = String(f.period);
     if (f.source.length) q.source = f.source.join(',');
+    // mode: skip default ('active'); 'all' = include_inactive
+    if (f.include_inactive) q.mode = 'all';
     return q;
 }
 
@@ -73,6 +76,7 @@ export function queryToFilters(search: string): FilterState {
         mileage: parseRange(sp.get('mileage')),
         period: parsePeriod(sp.get('period')),
         source: parseStrList(sp.get('source')),
+        include_inactive: sp.get('mode') === 'all',
     };
 }
 
@@ -88,6 +92,7 @@ export const useFilters = create<FiltersStore>((set) => ({
     setMileage: (mileage) => set({ mileage }),
     setPeriod: (period) => set({ period }),
     setSource: (source) => set({ source }),
+    setIncludeInactive: (v) => set({ include_inactive: v }),
     setAll: (next) => set(next as Partial<FiltersStore>),
     reset: () => set({ ...emptyFilters }),
     syncFromUrl: (search) => {
@@ -107,5 +112,6 @@ export function selectFilterState(s: FiltersStore): FilterState {
         mileage: s.mileage,
         period: s.period,
         source: s.source,
+        include_inactive: s.include_inactive,
     };
 }

@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-04-22 — Active/All toggle (исторический режим)
+
+### Added
+- **`include_inactive: bool` query param** добавлен в 9 backend endpoints: `/brands`, `/models`, `/summary`, `/market-overview`, `/price-history`, `/price-boxplot`, `/heatmap`, `/cities`, `/geo`. По умолчанию `false` → старое поведение (только `is_active=TRUE`). При `true` фильтр снимается → возвращаются все объявления когда-либо собранные парсером.
+- **Frontend toggle "Активные / Все"** в FilterBar (рядом с период-чипами): single global mode на весь дашборд. URL-sync через `?mode=all`. Передаётся во все API-вызовы дашборда.
+
+### Changed
+- `FilterState` (`frontend/types/analytics.ts`) — новое поле `include_inactive: boolean`, default `false`.
+- `useFilters` zustand-store: добавлены `setIncludeInactive`, парсинг/сериализация `mode=all` в URL.
+- `analyticsApi` (`frontend/lib/api.ts`): `getBrands`, `getModels`, `getCities`, `getGeo` теперь принимают опциональный `params` (раньше игнорировали).
+
+### Не трогал намеренно
+- `/recent` — live-лента всегда только активные (исторические объявления не имеют смысла в "сейчас на сайте").
+- `/liquidity` — оперирует `closed_at` (only-closed), is_active не релевантно.
+- `/listing/{id}`, `/valuation`, `/similar` — детали отдельного объявления, режим показывается у самой записи (`is_active`).
+- `/profit-ranking` — рейтинг рентабельности по текущему рынку (buy=p25, sell=median у активных). Исторический режим тут не имеет смысла — мёртвые объявления не покупают.
+
+### Use-case
+Включил "Все" — увидел весь рынок KZ за всю историю парсинга (с 2 марта 2026), полные распределения по маркам/городам/heatmap. Включил "Активные" (default) — обычный текущий снимок.
+
+---
+
 ## 2026-04-22 — alive_check SQL fix + airflow cleanup + bulk revive (`d0e9d1e` + ad-hoc SQL)
 
 ### Fixed

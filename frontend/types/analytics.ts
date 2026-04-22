@@ -11,6 +11,8 @@ export interface FilterState {
     mileage: [number, number] | null;
     period: Period;
     source: string[];
+    /** false = только активные (default UI), true = + снятые (исторический режим) */
+    include_inactive: boolean;
 }
 
 export const emptyFilters: FilterState = {
@@ -22,6 +24,7 @@ export const emptyFilters: FilterState = {
     mileage: null,
     period: 90,
     source: [],
+    include_inactive: false,
 };
 
 export interface Source {

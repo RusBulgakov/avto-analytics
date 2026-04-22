@@ -492,6 +492,30 @@ export default function FilterBar({ filters, onChange }: Props) {
 
             <div className="filterbar-sep" aria-hidden />
 
+            <div
+                className="period-group"
+                role="group"
+                aria-label="Режим"
+                title="Активные = только сейчас на сайтах. Все = + снятые (исторический режим)"
+            >
+                <button
+                    type="button"
+                    className={`period-btn ${!filters.include_inactive ? 'active' : ''}`}
+                    onClick={() => onChange({ ...filters, include_inactive: false })}
+                >
+                    Активные
+                </button>
+                <button
+                    type="button"
+                    className={`period-btn ${filters.include_inactive ? 'active' : ''}`}
+                    onClick={() => onChange({ ...filters, include_inactive: true })}
+                >
+                    Все
+                </button>
+            </div>
+
+            <div className="filterbar-sep" aria-hidden />
+
             <span
                 className="uppercase dim"
                 style={{ fontFamily: 'var(--mono)', marginLeft: 'auto' }}

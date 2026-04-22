@@ -32,6 +32,7 @@ function buildApiFilters(filters: FilterState) {
     if (filters.model_id.length) params.model_id = filters.model_id;
     if (filters.city.length) params.city = filters.city;
     if (filters.source.length) params.source = filters.source;
+    if (filters.include_inactive) params.include_inactive = true;
     return params;
 }
 
@@ -67,6 +68,7 @@ export default function Dashboard() {
     if (singleBrand != null) heatmapParams.brand_id = singleBrand;
     if (filters.city.length) heatmapParams.city = filters.city;
     if (filters.source.length) heatmapParams.source = filters.source;
+    if (filters.include_inactive) heatmapParams.include_inactive = true;
 
     const { data: heatmap, isLoading: heatmapLoading } = useSWR<HeatmapCell[]>(
         ['heatmap', heatmapParams],
@@ -96,6 +98,7 @@ export default function Dashboard() {
         city: filters.city.length ? filters.city : undefined,
         source: filters.source.length ? filters.source : undefined,
         ...(selectedBrandId ? { brand_id: selectedBrandId } : {}),
+        ...(filters.include_inactive ? { include_inactive: true } : {}),
     };
     const { data: boxplotData, isLoading: boxplotLoading } = useSWR(
         ['price-boxplot', boxplotParams],
@@ -103,9 +106,10 @@ export default function Dashboard() {
         { keepPreviousData: true }
     );
 
+    const geoParams = filters.include_inactive ? { include_inactive: true } : undefined;
     const { data: geo, isLoading: geoLoading } = useSWR(
-        'geo',
-        () => analyticsApi.getGeo(),
+        ['geo', filters.include_inactive],
+        () => analyticsApi.getGeo(geoParams),
         { keepPreviousData: true, refreshInterval: 300_000 }
     );
 
