@@ -1,0 +1,119 @@
+# Changelog
+
+Все значимые изменения проекта. Формат основан на [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), версии — date-based. Самое свежее — наверху.
+
+---
+
+## 2026-04-22 — Parser depth + alive-check revive (`e177dda`)
+
+### Added
+- **97 model-level feeds** для Kolesa parser: `toyota/camry`, `vaz/2107`, `mercedes-benz/e-class`, `hyundai/accent` и т.д. Обходит лимит пагинации kolesa (5000 объявлений на фид) — Toyota теперь покрывается через 14 sub-feed'ов × 5k = ~75k вместо 5k. Общее число фидов: **94 → 191**.
+- **`parsers/kolesa/alive_check.py`** — новый worker, который GET'ит listing_url у inactive объявлений и возвращает их в активные при HTTP 200. Rate-limited: 2 workers × 1.2–2.5s задержка = ~2 req/s. Batch 5000/run.
+- **`.github/workflows/alive_check.yml`** — новый workflow, крутится каждые 12 часов (00:30 и 12:30 UTC). Независимо от главного Daily Parsers.
+
+### Changed
+- **`parsers/common/db.py::deactivate_old_listings`** — default threshold 48h → **168h (7 дней)**. Переопределяется env `DEACTIVATE_THRESHOLD_HOURS`. Было: живые объявления с глубоких страниц помечались dead за 2 дня. Стало: 7-дневное окно = 4 парсер-прохода в запасе.
+- **`.github/workflows/daily_parsers.yml`** — cron `0 1 * * *` → `0 */6 * * *` (4× в сутки). Timeout 330 → 180 мин. GitHub Actions для public-репо бесплатен, частота не стоит денег.
+
+### Impact
+После первого полного цикла (3–4 часа) active_listings ожидаемо вырастет **23k → 70–100k**. Toyota: 3 950 → ~25 000 активных.
+
+---
+
+## 2026-04-22 — Frontend compact charts + real map (`57ed138`, `16d0b76`)
+
+### Added
+- **Реальная карта Казахстана на Leaflet + OpenStreetMap** (CartoDB dark tiles) вместо ручного SVG-силуэта. Маркеры — `CircleMarker` с размером по объёму объявлений.
+- **`components/charts/KZMapInner.tsx`** — client-only компонент (обёрнут в `next/dynamic` с `ssr:false`), содержит статическую таблицу lat/lng для 35 городов KZ.
+- **Dependencies:** `leaflet@1.9.4`, `react-leaflet@4.2.1`, `@types/leaflet@1.9.12`.
+
+### Changed
+- **Heatmap клетка:** `aspect-ratio:1.35/1` → фиксированная `height:20px`. На широких экранах сокращает вертикальную высоту с ~1000px до ~350px.
+- **BoxPlot:** ROW_H 44 → 22, boxH 18 → 10, wrapper `maxWidth:820`, explicit `height` на svg — больше не растягивается при `preserveAspectRatio=meet`.
+- **Grids** `.grid-2-1` / `.grid-1-1` / `.grid-1-1-1`: `align-items:start` — карточки не стретчатся под высоту самой высокой. Убирает пустое пространство под "Динамика цен".
+- **Recent feed:** wrapper с `maxHeight:360px; overflow-y:auto`.
+- **Funnel:** padding 10 → 6, bar-wrap height 20 → 14.
+- **Recent row:** padding 10 14 → 7 14.
+- **card-b:** padding `16px` → `14px 16px`.
+
+---
+
+## 2026-04-21 — Brands / Profitability / Forecast pages + public profit ranking (`b0ca9a0`)
+
+### Added
+- **`/brands`** — каталог марок (поиск + сетка), клик открывает дашборд с фильтром по марке.
+- **`/profitability`** — рейтинг моделей по потенциалу маржи перепродажи. Фильтры: `min_volume`, `limit`.
+- **`/forecast`** — placeholder для будущей PRO-фичи "прогноз цены".
+- **`GET /api/v1/analytics/profit-ranking`** — новый публичный endpoint для рейтинга рентабельности (не требует auth).
+
+### Removed
+- Photo placeholder блоки с listing-страницы (фото не парсятся).
+
+### Changed
+- Listing grid: `1.3fr / 1fr` → `1fr / 1fr` (равные колонки без фото).
+
+---
+
+## 2026-04-21 — Trading terminal redesign steps 6–8 (`01bba6c`)
+
+### Added
+- **Filter dropdowns** — portal-based dropdown для марки/модели/цены/года/пробега/города с анимированным сворачиванием.
+- **KZ map v1** — SVG-силуэт с абсолютно-позиционированными city pins (позже заменён на Leaflet, см. выше).
+- **Model page** (`/model?brand=...&model=...`) — детальный экран по модели.
+- **Listing page** (`/listing?id=...`) — детальный экран по объявлению с historic price chart, fair-price gauge, similar listings.
+
+### Added endpoints
+- `GET /api/v1/analytics/listing/{id}` — одно объявление с историей цены.
+- `GET /api/v1/analytics/valuation?listing_id=...` — fair-price оценка.
+- `GET /api/v1/analytics/similar?listing_id=...` — похожие объявления.
+- `GET /api/v1/analytics/geo` — координаты городов + объявления.
+
+### Changed
+- Роутинг динамических страниц: вместо `[param]`-папок — query-string (`?id=`, `?brand=`), совместимо с `output: 'export'`.
+
+---
+
+## 2026-04-21 — Analytics: heatmap + liquidity funnel + recent feed (`9e1050e`)
+
+### Added
+- **`GET /api/v1/analytics/heatmap`** — 14 лет × 6 mileage buckets, avg price + volume.
+- **`GET /api/v1/analytics/liquidity`** — distribution `days_to_sell` по корзинам (0–3, 4–7, …, 90+).
+- **`GET /api/v1/analytics/recent`** — live-лента свежих объявлений (обновляется каждые 30 сек).
+- **`GET /api/v1/analytics/cities`** — список городов с числом объявлений.
+- Фронт-компоненты: `Heatmap.tsx`, `Funnel.tsx`, `RecentFeed.tsx`.
+
+---
+
+## 2026-04-21 — Trading terminal redesign steps 1–3 (`3b6d252`)
+
+### Changed
+- Полный передел визуала под "trading terminal" эстетику: темная палитра (bg `#0a0c10`, surface `#11151c`), токены `--up/--down/--accent/--info`, Space Grotesk для заголовков, JetBrains Mono для цифр, Inter для тела.
+- `_app.tsx`: `next/font` для Inter + Space Grotesk + JetBrains Mono.
+- Новые layout-компоненты: `Topbar` (с live-тикером USD/KZT и active listings), `FilterBar`, `KPI`.
+
+---
+
+## 2026-04-21 — Deploy consolidation: Netlify → all-Render (`00cb165`)
+
+### Changed
+- Перенос фронта с Netlify на Render (Static Site). Бэк остаётся на Render (Web Service). Теперь единый dashboard.
+- `render.yaml` добавлен в root с двумя сервисами: `kolesa-backend`, `kolesa-frontend`.
+- `docker-compose.yml` упрощён — убраны postgres/redis/airflow/parsers/nginx (это дело парсеров/Neon/Render).
+
+---
+
+## 2026-04-20 — Kolesa feed expansion к ALL brands (`f945f98`, `3ecf630`)
+
+### Added
+- Kolesa parser: 15 cities + **79 brand feeds** (изначально было только top-15). Общее число фидов: 30 → 94.
+- `BRAND_FEEDS` список в `parsers/kolesa/parser.py` с deduplication через `dict.fromkeys`.
+
+### Changed
+- Concurrency: 5 → 3 параллельных feed'а (`CITY_CONCURRENCY=3`) — GitHub Actions IP не блочится.
+- Inter-batch sleep 8–15 сек, stop-on-IP-block логика.
+
+---
+
+## Ранее
+
+См. git log. До 2026-04-20 проект шёл без формального changelog.
