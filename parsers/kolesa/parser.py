@@ -326,12 +326,19 @@ def _parse_item(obj: dict) -> Optional[dict]:
         return None
 
 
-async def parse_city(city: str, session, pool) -> tuple[int, int]:
-    """Парсит все страницы для одного города. Каждый вызов берёт свой коннект из пула."""
+async def parse_city(city: str, session, pool, progress: Optional[dict] = None) -> tuple[int, int]:
+    """Парсит все страницы для одного города. Каждый вызов берёт свой коннект из пула.
+
+    progress: опциональный shared dict для обновления прогресс-бара в Telegram.
+    Ожидаемые ключи: 'pages_done' (int), 'total_saved' (int), 'total_new' (int),
+    'active_feeds' (set[str]). parse_city инкрементит их атомарно.
+    """
     saved = 0
     new_saved = 0
     consecutive_errors = 0
     MAX_CONSECUTIVE_ERRORS = 5  # >5 подряд = интернет лежит, нет смысла продолжать
+    if progress is not None:
+        progress['active_feeds'].add(city)
     for page in range(1, MAX_PAGES_PER_CITY + 1):
         if city == "all":
             url = f"{BASE_URL}/cars/" if page == 1 else f"{BASE_URL}/cars/?page={page}"
@@ -367,6 +374,10 @@ async def parse_city(city: str, session, pool) -> tuple[int, int]:
         items = [_parse_item(o) for o in items_raw]
         items = [i for i in items if i and i["external_id"]]
 
+        # Per-page дельта (для обновления shared progress state)
+        page_saved = 0
+        page_new = 0
+
         # Сохраняем с одним retry при ошибке соединения:
         # если соединение умерло (Neon/PgBouncer timeout) — берём свежее из пула.
         for attempt in range(2):
@@ -376,8 +387,10 @@ async def parse_city(city: str, session, pool) -> tuple[int, int]:
                     try:
                         _, is_new = await save_listing(conn, item)
                         saved += 1
+                        page_saved += 1
                         if is_new:
                             new_saved += 1
+                            page_new += 1
                     except Exception as e:
                         err = str(e)
                         if "released back to the pool" in err or "connection was closed" in err or "closed in the middle" in err:
@@ -395,7 +408,16 @@ async def parse_city(city: str, session, pool) -> tuple[int, int]:
 
         logger.info("kolesa %s стр %d: %d объявлений", city, page, len(items))
 
+        # Обновляем shared-state для прогресс-бара (атомарно — GIL + asyncio single thread)
+        if progress is not None:
+            progress['pages_done'] = progress.get('pages_done', 0) + 1
+            progress['total_saved'] = progress.get('total_saved', 0) + page_saved
+            progress['total_new'] = progress.get('total_new', 0) + page_new
+
         await asyncio.sleep(random.uniform(2.0, 4.0))
+
+    if progress is not None:
+        progress['active_feeds'].discard(city)
 
     return saved, new_saved
 
@@ -428,37 +450,86 @@ def _get_feeds_for_shard() -> tuple[list[str], int, int]:
     return feeds, shard_index, shard_count
 
 
+def _fmt_duration(sec: float) -> str:
+    """Форматирует секунды в '1ч 23м' или '45м 30с'."""
+    m, s = divmod(int(sec), 60)
+    h, m = divmod(m, 60)
+    return f"{h}ч {m:02d}м" if h else f"{m}м {s:02d}с"
+
+
 def _render_progress_bar(
-    *, source_tag: str, batch_done: int, total_batches: int,
+    *, source_tag: str, pages_done: int, total_pages_estimate: int,
+    feeds_done: int, total_feeds: int, active_feeds: set,
     total_saved: int, total_new: int, elapsed_sec: float,
 ) -> str:
-    """Рендерит HTML-сообщение с прогресс-баром для Telegram."""
-    pct = (batch_done / total_batches * 100) if total_batches else 0
+    """
+    Рендерит HTML прогресс-бар по СТРАНИЦАМ (не по батчам).
+    Это даёт плавный прогресс даже пока один крупный фид (almaty на 250 стр)
+    висит на одном батче часами.
+    """
+    pct = (pages_done / total_pages_estimate * 100) if total_pages_estimate else 0
+    pct = min(pct, 99.9)  # не показываем 100% пока не финал
     bar_width = 20
     filled = int(bar_width * pct / 100)
     bar = "█" * filled + "░" * (bar_width - filled)
 
-    el_m, el_s = divmod(int(elapsed_sec), 60)
-    el_h, el_m = divmod(el_m, 60)
-    elapsed_str = f"{el_h}ч {el_m:02d}м" if el_h else f"{el_m}м {el_s:02d}с"
-
-    # ETA: линейная экстраполяция по завершённым батчам
-    if batch_done > 0 and batch_done < total_batches:
-        rate = elapsed_sec / batch_done
-        eta_sec = rate * (total_batches - batch_done)
-        eta_m, eta_s = divmod(int(eta_sec), 60)
-        eta_h, eta_m = divmod(eta_m, 60)
-        eta_str = f"{eta_h}ч {eta_m:02d}м" if eta_h else f"{eta_m}м {eta_s:02d}с"
+    # ETA: линейная экстраполяция по скорости страниц/сек
+    if pages_done > 5 and elapsed_sec > 30:
+        rate = pages_done / elapsed_sec  # pages/sec
+        remaining = max(0, total_pages_estimate - pages_done)
+        eta_str = _fmt_duration(remaining / rate) if rate > 0 else "—"
     else:
         eta_str = "—"
+
+    active_str = ", ".join(sorted(active_feeds)[:3]) if active_feeds else "—"
+    if len(active_feeds) > 3:
+        active_str += f" +{len(active_feeds) - 3}"
 
     return (
         f"🕷 <b>{source_tag}</b>\n"
         f"<code>[{bar}]</code> {pct:.1f}%\n"
-        f"Батч {batch_done}/{total_batches}\n"
+        f"Страниц: {pages_done:,}  •  Фидов: {feeds_done}/{total_feeds}\n"
+        f"Сейчас: <i>{active_str}</i>\n"
         f"Сохранено: <b>{total_saved:,}</b>  (+{total_new:,} новых)\n"
-        f"Прошло: {elapsed_str}  |  ETA: {eta_str}"
+        f"Прошло: {_fmt_duration(elapsed_sec)}  |  ETA: {eta_str}"
     )
+
+
+async def _progress_updater(
+    progress: dict, message_id: int, source_tag: str,
+    total_pages_estimate: int, total_feeds: int, run_start: float,
+    stop_event: asyncio.Event,
+):
+    """
+    Фоновая задача: обновляет Telegram-сообщение каждые 60 сек,
+    пока stop_event не установлен.
+    """
+    from parsers.common.notifier import edit_telegram_message
+    import time as _time
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=60)
+            break  # получили stop_event
+        except asyncio.TimeoutError:
+            pass  # прошла 1 минута — обновляем
+
+        try:
+            await edit_telegram_message(
+                message_id,
+                _render_progress_bar(
+                    source_tag=source_tag,
+                    pages_done=progress.get('pages_done', 0),
+                    total_pages_estimate=total_pages_estimate,
+                    feeds_done=progress.get('feeds_done', 0),
+                    total_feeds=total_feeds,
+                    active_feeds=progress.get('active_feeds', set()),
+                    total_saved=progress.get('total_saved', 0),
+                    total_new=progress.get('total_new', 0),
+                    elapsed_sec=_time.time() - run_start,
+                ),
+            )
+        except Exception as e:
+            logger.warning("progress_updater: ошибка редактирования: %s", e)
 
 
 async def run_parser() -> tuple[int, int]:
@@ -503,28 +574,51 @@ async def run_parser() -> tuple[int, int]:
     total_saved = 0
     total_new = 0
     total_batches = (len(feeds) + CITY_CONCURRENCY - 1) // CITY_CONCURRENCY
+    # Оценка общего числа страниц для прогресса:
+    # средний фид ~50 страниц (города до 250, бренды/модели 5-100).
+    # Корректируется автоматически — если парсер кончит раньше, pct достигнет 99.9%
+    TOTAL_PAGES_ESTIMATE = len(feeds) * 50
 
     # Тег источника для прогресс-бара (shard-aware)
     source_tag = (f"kolesa[{shard_index + 1}/{shard_count}]"
                   if shard_count > 1 else "kolesa")
 
+    # Shared state для фонового updater'а
+    progress: dict = {
+        'pages_done': 0,
+        'feeds_done': 0,
+        'total_saved': 0,
+        'total_new': 0,
+        'active_feeds': set(),
+    }
+
     # Отправляем стартовое сообщение → получаем message_id для редактирования
     run_start = time.time()
     progress_msg_id = await send_telegram_message_with_id(
         _render_progress_bar(
-            source_tag=source_tag, batch_done=0, total_batches=total_batches,
+            source_tag=source_tag, pages_done=0, total_pages_estimate=TOTAL_PAGES_ESTIMATE,
+            feeds_done=0, total_feeds=len(feeds), active_feeds=set(),
             total_saved=0, total_new=0, elapsed_sec=0,
         )
     )
-    last_edit_ts = 0.0  # троттлинг — не чаще 1 раз в PROGRESS_EDIT_EVERY_SEC
-    PROGRESS_EDIT_EVERY_SEC = 60
+
+    # Фоновая задача-обновлятель (обновляет Telegram каждые 60 сек)
+    stop_event = asyncio.Event()
+    updater_task = None
+    if progress_msg_id is not None:
+        updater_task = asyncio.create_task(
+            _progress_updater(
+                progress, progress_msg_id, source_tag,
+                TOTAL_PAGES_ESTIMATE, len(feeds), run_start, stop_event,
+            )
+        )
 
     async with requests.AsyncSession(impersonate="chrome") as session:
         # Разбиваем на батчи — не кладём весь сайт одновременно
         for batch_num, i in enumerate(range(0, len(feeds), CITY_CONCURRENCY)):
             batch = feeds[i : i + CITY_CONCURRENCY]
             logger.info("Батч %d/%d фидов: %s", batch_num + 1, total_batches, batch)
-            tasks = [parse_city(feed, session, pool) for feed in batch]
+            tasks = [parse_city(feed, session, pool, progress) for feed in batch]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
             timeout_count = 0
@@ -536,6 +630,7 @@ async def run_parser() -> tuple[int, int]:
                     count, new_count = result
                     total_saved += count
                     total_new += new_count
+                    progress['feeds_done'] = progress.get('feeds_done', 0) + 1
                     logger.info("kolesa %s: итого %d (%d новых)", feed, count, new_count)
 
             # Если все фиды в батче тайм-аутнули — IP заблокирован, нет смысла продолжать
@@ -543,24 +638,17 @@ async def run_parser() -> tuple[int, int]:
                 logger.warning("Все %d фидов в батче тайм-аутнули — вероятно IP заблокирован, завершаем", len(batch))
                 break
 
-            # Обновляем Telegram прогресс-бар (не чаще 1/мин — избегаем rate limit)
-            if progress_msg_id is not None and time.time() - last_edit_ts >= PROGRESS_EDIT_EVERY_SEC:
-                last_edit_ts = time.time()
-                await edit_telegram_message(
-                    progress_msg_id,
-                    _render_progress_bar(
-                        source_tag=source_tag,
-                        batch_done=batch_num + 1,
-                        total_batches=total_batches,
-                        total_saved=total_saved,
-                        total_new=total_new,
-                        elapsed_sec=time.time() - run_start,
-                    ),
-                )
-
             # Пауза между батчами: снижает вероятность rate limit для следующего батча
             if i + CITY_CONCURRENCY < len(feeds):
                 await asyncio.sleep(random.uniform(8.0, 15.0))
+
+    # Останавливаем фоновый updater до финального сообщения
+    if updater_task is not None:
+        stop_event.set()
+        try:
+            await asyncio.wait_for(updater_task, timeout=5)
+        except asyncio.TimeoutError:
+            updater_task.cancel()
 
     shard_tag = f" SHARD {shard_index + 1}/{shard_count}" if shard_count > 1 else ""
     logger.info("Парсинг kolesa.kz%s завершён. Всего: %d, новых: %d", shard_tag, total_saved, total_new)
