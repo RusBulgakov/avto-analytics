@@ -11,6 +11,7 @@ import { fmt } from '@/lib/format';
 interface ProfitRow {
     brand: string;
     model: string;
+    year: number | null;
     volume: number;
     buy_price: number | null;
     sell_price: number | null;
@@ -22,6 +23,8 @@ interface ProfitRow {
 
 const MIN_VOLUME_OPTIONS = [10, 20, 40, 80];
 const LIMIT_OPTIONS = [20, 50, 100];
+const CURRENT_YEAR = new Date().getFullYear();
+const YEAR_OPTIONS = Array.from({ length: CURRENT_YEAR - 1999 }, (_, i) => CURRENT_YEAR - i); // 2026..2000
 
 function riskBadge(risk: 'low' | 'medium' | 'high') {
     if (risk === 'low') return <Badge variant="up">низкий</Badge>;
@@ -32,10 +35,17 @@ function riskBadge(risk: 'low' | 'medium' | 'high') {
 export default function ProfitabilityPage() {
     const [minVol, setMinVol] = useState(20);
     const [limit, setLimit] = useState(50);
+    const [yearFrom, setYearFrom] = useState<number | null>(null);
+    const [yearTo, setYearTo] = useState<number | null>(null);
 
     const { data, isLoading } = useSWR<ProfitRow[]>(
-        ['profit-ranking', minVol, limit],
-        () => analyticsApi.getProfitRanking({ min_volume: minVol, limit }),
+        ['profit-ranking', minVol, limit, yearFrom, yearTo],
+        () => analyticsApi.getProfitRanking({
+            min_volume: minVol,
+            limit,
+            ...(yearFrom && { year_from: yearFrom }),
+            ...(yearTo   && { year_to:   yearTo   }),
+        }),
         { keepPreviousData: true }
     );
 
@@ -65,7 +75,31 @@ export default function ProfitabilityPage() {
                             </div>
                         </div>
 
-                        <div style={{ display: 'flex', gap: 10 }}>
+                        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                            {/* Год от */}
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: 'var(--text-muted)' }}>
+                                <span className="uppercase">год от</span>
+                                <select
+                                    value={yearFrom ?? ''}
+                                    onChange={e => setYearFrom(e.target.value ? Number(e.target.value) : null)}
+                                    style={{ fontSize: 13, padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text)', cursor: 'pointer' }}
+                                >
+                                    <option value="">любой</option>
+                                    {YEAR_OPTIONS.map(y => <option key={y} value={y}>{y}</option>)}
+                                </select>
+                            </label>
+                            {/* Год до */}
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: 'var(--text-muted)' }}>
+                                <span className="uppercase">год до</span>
+                                <select
+                                    value={yearTo ?? ''}
+                                    onChange={e => setYearTo(e.target.value ? Number(e.target.value) : null)}
+                                    style={{ fontSize: 13, padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text)', cursor: 'pointer' }}
+                                >
+                                    <option value="">любой</option>
+                                    {YEAR_OPTIONS.map(y => <option key={y} value={y}>{y}</option>)}
+                                </select>
+                            </label>
                             <label
                                 style={{
                                     display: 'flex',
@@ -125,6 +159,7 @@ export default function ProfitabilityPage() {
                                         <tr>
                                             <th style={{ width: 44 }}>#</th>
                                             <th>Модель</th>
+                                            <th className="right">Год</th>
                                             <th className="right">Покупка (p25)</th>
                                             <th className="right">Продажа (медиана)</th>
                                             <th className="right">Маржа</th>
@@ -135,13 +170,16 @@ export default function ProfitabilityPage() {
                                     </thead>
                                     <tbody>
                                         {data.map((r, i) => (
-                                            <tr key={`${r.brand}|${r.model}`}>
+                                            <tr key={`${r.brand}|${r.model}|${r.year}`}>
                                                 <td>
                                                     <span className="rank">{i + 1}</span>
                                                 </td>
                                                 <td>
                                                     <strong>{r.brand}</strong>{' '}
                                                     <span className="dim">{r.model}</span>
+                                                </td>
+                                                <td className="num">
+                                                    {r.year ?? '—'}
                                                 </td>
                                                 <td className="num">
                                                     {r.buy_price != null ? fmt.price(r.buy_price) : '—'}
