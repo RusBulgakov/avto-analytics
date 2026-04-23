@@ -1,8 +1,14 @@
-name: Daily Parsers
+name: Daily Parsers (light)
+
+# Лёгкие парсеры — mycar, newauto, avtorynok, olx.
+# Каждый укладывается в 60–120 минут → можно гонять каждые 6 часов.
+#
+# Тяжёлый kolesa.kz вынесен в отдельный workflow (kolesa_full.yml),
+# потому что его полный прогон занимает ~10 часов и требует шардирования.
 
 on:
   schedule:
-    - cron: '0 */6 * * *'  # каждые 6 часов (01/07/13/19 UTC = 06/12/18/00 Астана)
+    - cron: '0 */6 * * *'  # каждые 6 часов (00/06/12/18 UTC = 05/11/17/23 Астана)
   workflow_dispatch:
     inputs:
       source:
@@ -12,11 +18,14 @@ on:
         type: choice
         options:
           - all
-          - kolesa
           - mycar
           - newauto
           - avtorynok
           - olx
+
+concurrency:
+  group: daily-parsers-light
+  cancel-in-progress: false
 
 env:
   PYTHONPATH: ${{ github.workspace }}
@@ -46,18 +55,18 @@ jobs:
         run: python -m parsers.common.refresh_proxies
 
   # ─────────────────────────────────────────
-  # Шаг 2: Параллельный запуск парсеров
+  # Шаг 2: Параллельный запуск лёгких парсеров
   # ─────────────────────────────────────────
   parse-all:
     name: 🕷️ Parse ${{ matrix.source }}
     needs: refresh-proxies
     runs-on: ubuntu-latest
-    timeout-minutes: 180  # 3 часа — запускаемся каждые 6 ч, надо укладываться
+    timeout-minutes: 180
     if: always() && needs.refresh-proxies.result != 'cancelled'
     strategy:
-      fail-fast: false  # если один парсер упал — остальные продолжают
+      fail-fast: false
       matrix:
-        source: [kolesa, mycar, newauto, avtorynok, olx]
+        source: [mycar, newauto, avtorynok, olx]
 
     steps:
       - name: Check if this parser should run
@@ -98,12 +107,14 @@ jobs:
   # ─────────────────────────────────────────
   # Шаг 3: Деактивация старых объявлений
   # ─────────────────────────────────────────
+  # Запускается ТОЛЬКО при успешном завершении парсеров.
+  # Иначе сохраняем существующие данные — лучше немного stale, чем потерять всё.
   deactivate-old:
     name: 🧹 Deactivate Old Listings
     needs: parse-all
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    if: always() && needs.parse-all.result != 'cancelled'
+    if: success()
     steps:
       - uses: actions/checkout@v4
 
@@ -120,3 +131,5 @@ jobs:
         run: python -m parsers.common.deactivate
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

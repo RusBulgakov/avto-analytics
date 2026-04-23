@@ -1,0 +1,133 @@
+name: Kolesa Full Parse (sharded)
+
+# Отдельный workflow для kolesa.kz — самого тяжёлого источника.
+# 191 фид × ~3 мин = ~10ч в один job не влезает (GHA лимит 360 мин).
+# Решение: шардирование на 4 параллельных job'а, каждый парсит ~48 фидов ~2.5–3ч.
+#
+# После УСПЕШНОГО завершения ВСЕХ 4 шардов → запускается deactivate-old.
+# Если хоть один шард упал/прерван → deactivate НЕ запускается,
+# чтобы не помечать inactive то, что не успели обновить (сохраняем данные).
+
+on:
+  schedule:
+    - cron: '0 20 * * *'   # 20:00 UTC = 01:00 Астана (ночь, минимум нагрузки)
+  workflow_dispatch:
+    inputs:
+      shard_count:
+        description: 'Количество шардов (по умолчанию 4)'
+        required: false
+        default: '4'
+
+# Не запускать параллельно — если предыдущий прогон ещё идёт, новый встанет в очередь.
+# cancel-in-progress: false — не убиваем начатый прогон,
+# потому что данные уже сохраняются в БД и рвать их на полпути невыгодно.
+concurrency:
+  group: kolesa-full
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: ${{ github.workspace }}
+  SHARD_COUNT: ${{ github.event.inputs.shard_count || '4' }}
+
+jobs:
+
+  # ─────────────────────────────────────────
+  # Шаг 1: Параллельный запуск шардов kolesa
+  # ─────────────────────────────────────────
+  kolesa-shard:
+    name: 🕷️ Kolesa shard ${{ matrix.shard_index }}/4
+    runs-on: ubuntu-latest
+    timeout-minutes: 350  # ~5.8 ч — запас над ожидаемыми 2.5–3ч на шард
+    strategy:
+      fail-fast: false   # если один шард упал — остальные продолжают работать
+      matrix:
+        # Если меняешь SHARD_COUNT — синхронизируй этот список!
+        shard_index: [0, 1, 2, 3]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: parsers/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r parsers/requirements.txt
+
+      - name: Run kolesa parser (shard ${{ matrix.shard_index }})
+        run: python -m parsers.kolesa.parser
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          KOLESA_SHARD_INDEX: ${{ matrix.shard_index }}
+          KOLESA_SHARD_COUNT: 4
+          PARSER_REQUEST_DELAY_MIN: 3
+          PARSER_REQUEST_DELAY_MAX: 6
+          PARSER_MAX_RETRIES: 3
+
+  # ─────────────────────────────────────────
+  # Шаг 2: Деактивация старых объявлений
+  # ─────────────────────────────────────────
+  # Запускается ТОЛЬКО если ВСЕ шарды успешны (needs.result == success).
+  # Иначе — держим данные как есть, чтобы не терять объявления из незавершённых шардов.
+  deactivate-old:
+    name: 🧹 Deactivate Old Listings
+    needs: kolesa-shard
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: success()  # только при полном успехе всех шардов
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: parsers/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r parsers/requirements.txt
+
+      - name: Deactivate old listings
+        run: python -m parsers.common.deactivate
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+  # ─────────────────────────────────────────
+  # Шаг 3: Итоговое уведомление в Telegram
+  # ─────────────────────────────────────────
+  summary:
+    name: 📊 Send summary to Telegram
+    needs: [kolesa-shard, deactivate-old]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Notify final status
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          KOLESA_RESULT: ${{ needs.kolesa-shard.result }}
+          DEACTIVATE_RESULT: ${{ needs.deactivate-old.result }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "Telegram credentials not set — skipping"
+            exit 0
+          fi
+
+          if [ "$KOLESA_RESULT" = "success" ] && [ "$DEACTIVATE_RESULT" = "success" ]; then
+            ICON="✅"; TEXT="Kolesa full run: все 4 шарда + деактивация — OK"
+          elif [ "$KOLESA_RESULT" = "success" ]; then
+            ICON="⚠️"; TEXT="Kolesa: шарды OK, деактивация = $DEACTIVATE_RESULT"
+          else
+            ICON="🔴"; TEXT="Kolesa: шарды = $KOLESA_RESULT (деактивация пропущена: $DEACTIVATE_RESULT)"
+          fi
+
+          curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
+            -d chat_id="$TELEGRAM_CHAT_ID" \
+            -d parse_mode=HTML \
+            -d text="$ICON <b>Kolesa Full Run</b>%0A$TEXT%0A%0ARun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"

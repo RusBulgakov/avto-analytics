@@ -400,26 +400,66 @@ async def parse_city(city: str, session, pool) -> tuple[int, int]:
     return saved, new_saved
 
 
+def _get_feeds_for_shard() -> tuple[list[str], int, int]:
+    """
+    Разбивает ALL_FEEDS на шарды по env vars KOLESA_SHARD_INDEX / KOLESA_SHARD_COUNT.
+    Используется для параллельного запуска в GitHub Actions matrix.
+
+    Пример: SHARD_COUNT=4, SHARD_INDEX=0 → берём каждый 4-й фид начиная с 0.
+    Round-robin распределение даёт балансировку (города, бренды, модели перемешаны).
+
+    Возвращает (feeds_for_this_shard, shard_index, shard_count).
+    По умолчанию (нет env vars) → все фиды, один шард.
+    """
+    import os as _os
+    try:
+        shard_count = int(_os.getenv("KOLESA_SHARD_COUNT", "1"))
+        shard_index = int(_os.getenv("KOLESA_SHARD_INDEX", "0"))
+    except ValueError:
+        shard_count, shard_index = 1, 0
+
+    if shard_count < 1 or shard_index < 0 or shard_index >= shard_count:
+        logger.warning("Некорректный SHARD_INDEX=%d при SHARD_COUNT=%d — запускаем все фиды",
+                       shard_index, shard_count)
+        return ALL_FEEDS, 0, 1
+
+    # Round-robin: фид i идёт в шард (i % shard_count)
+    feeds = [f for idx, f in enumerate(ALL_FEEDS) if idx % shard_count == shard_index]
+    return feeds, shard_index, shard_count
+
+
 async def run_parser() -> tuple[int, int]:
     """Основная функция — запускает сбор данных по всем городам + брендам параллельно.
 
-    Фиды (города + бренды) запускаются батчами по CITY_CONCURRENCY одновременно.
+    Фиды (города + бренды + модели) запускаются батчами по CITY_CONCURRENCY одновременно.
     Каждый фид берёт свой коннект из asyncpg пула → нет конфликтов.
     - Города (15 шт.): региональный охват по крупным городам KZ
     - Бренды (79 шт.): все бренды kolesa.kz — полный национальный охват
-    Итого 94 фида × 5000 max = до 470 000 объявлений за один запуск.
+    - Модели (97 шт.): тяжёлые модели для обхода лимита 5000/фид
+    Итого 191 фид × 5000 max ≈ до 950 000 объявлений за один полный прогон.
     Дубли (объявление появляется в городском и брендовом фидах) — без проблем:
     save_listing использует ON CONFLICT → только обновляет last_seen_at.
+
+    Поддерживает шардирование через KOLESA_SHARD_INDEX / KOLESA_SHARD_COUNT
+    для параллельного запуска в GitHub Actions (4 шарда × 3ч = полный прогон ≤ 3ч).
     """
     # 3 параллельных фида вместо 5: GitHub Actions datacenter IP блокируется
     # kolesa.kz при слишком высоком burst rate (5 × req/3s = 100 req/min → timeout).
     # При 3 параллельных = 60 req/min — проходит без блока.
     CITY_CONCURRENCY = 3
 
-    logger.info(
-        "Старт парсинга kolesa.kz (%d городов + %d брендов + %d моделей = %d фидов, по %d одновременно)",
-        len(CITIES), len(BRAND_FEEDS), len(MODEL_FEEDS), len(ALL_FEEDS), CITY_CONCURRENCY,
-    )
+    feeds, shard_index, shard_count = _get_feeds_for_shard()
+
+    if shard_count > 1:
+        logger.info(
+            "Старт kolesa.kz SHARD %d/%d: %d фидов из %d (по %d одновременно)",
+            shard_index + 1, shard_count, len(feeds), len(ALL_FEEDS), CITY_CONCURRENCY,
+        )
+    else:
+        logger.info(
+            "Старт парсинга kolesa.kz (%d городов + %d брендов + %d моделей = %d фидов, по %d одновременно)",
+            len(CITIES), len(BRAND_FEEDS), len(MODEL_FEEDS), len(ALL_FEEDS), CITY_CONCURRENCY,
+        )
 
     from curl_cffi import requests
 
@@ -430,10 +470,10 @@ async def run_parser() -> tuple[int, int]:
 
     async with requests.AsyncSession(impersonate="chrome") as session:
         # Разбиваем на батчи — не кладём весь сайт одновременно
-        for batch_num, i in enumerate(range(0, len(ALL_FEEDS), CITY_CONCURRENCY)):
-            batch = ALL_FEEDS[i : i + CITY_CONCURRENCY]
+        for batch_num, i in enumerate(range(0, len(feeds), CITY_CONCURRENCY)):
+            batch = feeds[i : i + CITY_CONCURRENCY]
             logger.info("Батч %d/%d фидов: %s", batch_num + 1,
-                        (len(ALL_FEEDS) + CITY_CONCURRENCY - 1) // CITY_CONCURRENCY, batch)
+                        (len(feeds) + CITY_CONCURRENCY - 1) // CITY_CONCURRENCY, batch)
             tasks = [parse_city(feed, session, pool) for feed in batch]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -454,10 +494,11 @@ async def run_parser() -> tuple[int, int]:
                 break
 
             # Пауза между батчами: снижает вероятность rate limit для следующего батча
-            if i + CITY_CONCURRENCY < len(ALL_FEEDS):
+            if i + CITY_CONCURRENCY < len(feeds):
                 await asyncio.sleep(random.uniform(8.0, 15.0))
 
-    logger.info("Парсинг kolesa.kz завершён. Всего: %d, новых: %d", total_saved, total_new)
+    shard_tag = f" SHARD {shard_index + 1}/{shard_count}" if shard_count > 1 else ""
+    logger.info("Парсинг kolesa.kz%s завершён. Всего: %d, новых: %d", shard_tag, total_saved, total_new)
     return total_saved, total_new
 
 
@@ -466,12 +507,18 @@ if __name__ == "__main__":
     load_dotenv()  # грузит .env из текущей директории (для локального запуска)
     logging.basicConfig(level=logging.INFO)
     import time
+    import os as _os_main
     from parsers.common.notifier import send_success, send_error
-    
+
+    # Для осмысленного имени в Telegram уведомлении в случае шардирования
+    _shard_count = int(_os_main.getenv("KOLESA_SHARD_COUNT", "1"))
+    _shard_index = int(_os_main.getenv("KOLESA_SHARD_INDEX", "0"))
+    source_tag = f"kolesa[{_shard_index + 1}/{_shard_count}]" if _shard_count > 1 else "kolesa"
+
     start = time.time()
     try:
         total, total_new = asyncio.run(run_parser())
-        asyncio.run(send_success("kolesa", total, start, time.time(), total_new))
+        asyncio.run(send_success(source_tag, total, start, time.time(), total_new))
     except Exception as e:
         logger.exception("Парсер kolesa упал")
-        asyncio.run(send_error("kolesa", e))
+        asyncio.run(send_error(source_tag, e))

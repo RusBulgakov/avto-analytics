@@ -68,13 +68,20 @@ async def fetch(
                 # curl_cffi proxy format is typically {"http": proxy, "https": proxy} or a string, let's use string
                 # or just pass proxy string if it works. requests accepts strings.
                 proxies = {"http": proxy, "https": proxy} if proxy else None
-                
-                resp = await session.get(
-                    url,
-                    headers=headers,
-                    params=params,
-                    proxies=proxies,
-                    timeout=30,
+
+                # asyncio.wait_for — жёсткий дедлайн поверх curl_cffi timeout=30.
+                # curl_cffi иногда висит вечно на зависших TCP-соединениях
+                # (timeout= внутри libcurl не срабатывает). wait_for гарантирует,
+                # что корутина будет принудительно отменена через 35 с.
+                resp = await asyncio.wait_for(
+                    session.get(
+                        url,
+                        headers=headers,
+                        params=params,
+                        proxies=proxies,
+                        timeout=30,
+                    ),
+                    timeout=35,
                 )
                 
                 if resp.status_code in RETRYABLE_STATUSES:

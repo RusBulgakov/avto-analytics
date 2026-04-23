@@ -8,18 +8,18 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
 async def send_telegram_message(message: str) -> bool:
     """Отправляет сообщение в Telegram. Возвращает True, если успешно."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    # Читаем в момент вызова — чтобы load_dotenv() успел отработать до импорта модуля
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
         logger.warning("Telegram credentials not set. Message not sent: %s", message)
         return False
         
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
+        "chat_id": chat_id,
         "text": message,
         "parse_mode": "HTML"
     }
