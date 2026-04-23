@@ -503,6 +503,7 @@ async def run_parser() -> tuple[int, int]:
 
 
 if __name__ == "__main__":
+    import sys
     from dotenv import load_dotenv
     load_dotenv()  # грузит .env из текущей директории (для локального запуска)
     logging.basicConfig(level=logging.INFO)
@@ -515,10 +516,26 @@ if __name__ == "__main__":
     _shard_index = int(_os_main.getenv("KOLESA_SHARD_INDEX", "0"))
     source_tag = f"kolesa[{_shard_index + 1}/{_shard_count}]" if _shard_count > 1 else "kolesa"
 
+    # Smoke-check: если сохранили подозрительно мало — exit 1, чтобы
+    # зависящий от success deactivate-old job НЕ запустился и не помечал
+    # inactive то, что реально живо (просто не долетело до нас из-за IP-блока).
+    # Нижняя граница: 1000 записей per shard (локально 1 шард даёт 3000+/час).
+    # Можно переопределить через MIN_SAVED_THRESHOLD env var.
+    MIN_SAVED_THRESHOLD = int(_os_main.getenv("MIN_SAVED_THRESHOLD", "1000"))
+
     start = time.time()
     try:
         total, total_new = asyncio.run(run_parser())
         asyncio.run(send_success(source_tag, total, start, time.time(), total_new))
+
+        if total < MIN_SAVED_THRESHOLD:
+            logger.error(
+                "Слишком мало сохранено: %d < %d — вероятно IP заблокирован. "
+                "Exit 1 чтобы отменить deactivate-old job.",
+                total, MIN_SAVED_THRESHOLD,
+            )
+            sys.exit(1)
     except Exception as e:
         logger.exception("Парсер kolesa упал")
         asyncio.run(send_error(source_tag, e))
+        sys.exit(1)
