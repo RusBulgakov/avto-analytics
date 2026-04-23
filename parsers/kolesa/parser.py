@@ -428,6 +428,39 @@ def _get_feeds_for_shard() -> tuple[list[str], int, int]:
     return feeds, shard_index, shard_count
 
 
+def _render_progress_bar(
+    *, source_tag: str, batch_done: int, total_batches: int,
+    total_saved: int, total_new: int, elapsed_sec: float,
+) -> str:
+    """Рендерит HTML-сообщение с прогресс-баром для Telegram."""
+    pct = (batch_done / total_batches * 100) if total_batches else 0
+    bar_width = 20
+    filled = int(bar_width * pct / 100)
+    bar = "█" * filled + "░" * (bar_width - filled)
+
+    el_m, el_s = divmod(int(elapsed_sec), 60)
+    el_h, el_m = divmod(el_m, 60)
+    elapsed_str = f"{el_h}ч {el_m:02d}м" if el_h else f"{el_m}м {el_s:02d}с"
+
+    # ETA: линейная экстраполяция по завершённым батчам
+    if batch_done > 0 and batch_done < total_batches:
+        rate = elapsed_sec / batch_done
+        eta_sec = rate * (total_batches - batch_done)
+        eta_m, eta_s = divmod(int(eta_sec), 60)
+        eta_h, eta_m = divmod(eta_m, 60)
+        eta_str = f"{eta_h}ч {eta_m:02d}м" if eta_h else f"{eta_m}м {eta_s:02d}с"
+    else:
+        eta_str = "—"
+
+    return (
+        f"🕷 <b>{source_tag}</b>\n"
+        f"<code>[{bar}]</code> {pct:.1f}%\n"
+        f"Батч {batch_done}/{total_batches}\n"
+        f"Сохранено: <b>{total_saved:,}</b>  (+{total_new:,} новых)\n"
+        f"Прошло: {elapsed_str}  |  ETA: {eta_str}"
+    )
+
+
 async def run_parser() -> tuple[int, int]:
     """Основная функция — запускает сбор данных по всем городам + брендам параллельно.
 
@@ -462,18 +495,35 @@ async def run_parser() -> tuple[int, int]:
         )
 
     from curl_cffi import requests
+    from parsers.common.notifier import send_telegram_message_with_id, edit_telegram_message
+    import time
 
     pool = await get_pool()
 
     total_saved = 0
     total_new = 0
+    total_batches = (len(feeds) + CITY_CONCURRENCY - 1) // CITY_CONCURRENCY
+
+    # Тег источника для прогресс-бара (shard-aware)
+    source_tag = (f"kolesa[{shard_index + 1}/{shard_count}]"
+                  if shard_count > 1 else "kolesa")
+
+    # Отправляем стартовое сообщение → получаем message_id для редактирования
+    run_start = time.time()
+    progress_msg_id = await send_telegram_message_with_id(
+        _render_progress_bar(
+            source_tag=source_tag, batch_done=0, total_batches=total_batches,
+            total_saved=0, total_new=0, elapsed_sec=0,
+        )
+    )
+    last_edit_ts = 0.0  # троттлинг — не чаще 1 раз в PROGRESS_EDIT_EVERY_SEC
+    PROGRESS_EDIT_EVERY_SEC = 60
 
     async with requests.AsyncSession(impersonate="chrome") as session:
         # Разбиваем на батчи — не кладём весь сайт одновременно
         for batch_num, i in enumerate(range(0, len(feeds), CITY_CONCURRENCY)):
             batch = feeds[i : i + CITY_CONCURRENCY]
-            logger.info("Батч %d/%d фидов: %s", batch_num + 1,
-                        (len(feeds) + CITY_CONCURRENCY - 1) // CITY_CONCURRENCY, batch)
+            logger.info("Батч %d/%d фидов: %s", batch_num + 1, total_batches, batch)
             tasks = [parse_city(feed, session, pool) for feed in batch]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -493,12 +543,43 @@ async def run_parser() -> tuple[int, int]:
                 logger.warning("Все %d фидов в батче тайм-аутнули — вероятно IP заблокирован, завершаем", len(batch))
                 break
 
+            # Обновляем Telegram прогресс-бар (не чаще 1/мин — избегаем rate limit)
+            if progress_msg_id is not None and time.time() - last_edit_ts >= PROGRESS_EDIT_EVERY_SEC:
+                last_edit_ts = time.time()
+                await edit_telegram_message(
+                    progress_msg_id,
+                    _render_progress_bar(
+                        source_tag=source_tag,
+                        batch_done=batch_num + 1,
+                        total_batches=total_batches,
+                        total_saved=total_saved,
+                        total_new=total_new,
+                        elapsed_sec=time.time() - run_start,
+                    ),
+                )
+
             # Пауза между батчами: снижает вероятность rate limit для следующего батча
             if i + CITY_CONCURRENCY < len(feeds):
                 await asyncio.sleep(random.uniform(8.0, 15.0))
 
     shard_tag = f" SHARD {shard_index + 1}/{shard_count}" if shard_count > 1 else ""
     logger.info("Парсинг kolesa.kz%s завершён. Всего: %d, новых: %d", shard_tag, total_saved, total_new)
+
+    # Финальное обновление прогресс-бара — 100% с итогами
+    if progress_msg_id is not None:
+        elapsed = time.time() - run_start
+        el_m, el_s = divmod(int(elapsed), 60)
+        el_h, el_m = divmod(el_m, 60)
+        elapsed_str = f"{el_h}ч {el_m:02d}м {el_s:02d}с" if el_h else f"{el_m}м {el_s:02d}с"
+        await edit_telegram_message(
+            progress_msg_id,
+            f"✅ <b>{source_tag}</b> завершён\n"
+            f"<code>[{'█' * 20}]</code> 100%\n"
+            f"Батчей: {total_batches}/{total_batches}\n"
+            f"Сохранено: <b>{total_saved:,}</b>  (+{total_new:,} новых)\n"
+            f"Время: {elapsed_str}"
+        )
+
     return total_saved, total_new
 
 
@@ -509,7 +590,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     import time
     import os as _os_main
-    from parsers.common.notifier import send_success, send_error
+    from parsers.common.notifier import send_error
 
     # Для осмысленного имени в Telegram уведомлении в случае шардирования
     _shard_count = int(_os_main.getenv("KOLESA_SHARD_COUNT", "1"))
@@ -525,8 +606,9 @@ if __name__ == "__main__":
 
     start = time.time()
     try:
+        # send_success больше не нужен — run_parser сам рисует финальный
+        # прогресс-бар через edit_telegram_message.
         total, total_new = asyncio.run(run_parser())
-        asyncio.run(send_success(source_tag, total, start, time.time(), total_new))
 
         if total < MIN_SAVED_THRESHOLD:
             logger.error(
