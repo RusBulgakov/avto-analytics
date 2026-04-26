@@ -62,6 +62,43 @@ UPDATE listings l SET model_id = NULL FROM models m
 
 ---
 
+## 2026-04-26 — Backtest top-10: outlier guards для display-tier
+
+### Why
+Юзер увидел в "Топ-10 успешных сделок" `Toyota Camry 2020 — Купил 10K → Market 12.0M → ARB +119,900%`. Очевидно мусор: 10К ₸ — это либо typo продавца, либо парсер записал неправильную цену. Главный SQL-CTE имел outlier-guard (`>= 100k ₸ AND > p25 * 0.30`), но **отдельный top_query для top-winners table его не имел** — забыли применить.
+
+### Changed
+- **Backtest top-10 query** теперь имеет более жёсткие guards для display:
+  ```
+  AND fp.first_price >= 1_000_000      -- min 1M ₸ (vintage за 100k не показываем)
+  AND fp.first_price > gp.p25 * 0.50   -- больше 50% от p25 (был 0.30)
+  AND m.name NOT LIKE '(%'             -- mongol parser bugs
+  AND LOWER(m.name) <> LOWER(b.name)   -- mongol parser bugs
+  ```
+  Главный aggregate (signals CTE) тоже apgrейжен — `0.30 → 0.50` для consistency.
+
+### Why two tiers (aggregate vs display)
+- **Aggregate CTE** (для total_signals / win_rate / median_arb_margin): сохраняет min 100k ₸ — улавливает "массовый" арб даже на дешёвых vintage
+- **Top-10 display**: жёсткий 1M ₸ — мы показываем "качественные" примеры, а не vintage за 300k где margin высокий из-за фактора "почти бесплатно vs реально работающий"
+
+### Validated
+До:
+```
+1. Toyota Camry 2020   buy 10K     market 12.0M  arb +119,900%   ← TYPO
+2. Audi 100 1990       buy 350K    market 1.51M  arb +332%       ← VINTAGE
+3. Lada (Lada) 2007    buy 300K    market 1.00M  arb +233%       ← MODEL BUG
+```
+После:
+```
+1. Renault Duster 2020         buy 2.35M  market 6.50M  arb +176%  2д
+2. Mitsubishi Delica 1995      buy 1.00M  market 2.73M  arb +172%  18д
+3. Toyota Land Cruiser Prado   buy 2.50M  market 6.50M  arb +160%  27д
+4. Toyota Camry 2015           buy 4.00M  market 9.81M  arb +145%  18д
+```
+Все realistic — реальные срочные продажи / vintage 4WD / etc.
+
+---
+
 ## 2026-04-26 — Profitability: brand/model/city filters + sortable columns
 
 ### Why

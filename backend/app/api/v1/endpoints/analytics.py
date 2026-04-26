@@ -1838,9 +1838,10 @@ async def get_backtest(
               -- ★ Защита от outliers: минимум 100k ₸ (отсекает junk
               -- listings где first_price = 1 / 100 ₸ и ломает avg-margin)
               AND fp.first_price >= 100000
-              -- ★ Также: discount не больше 70% — иначе это явно мусор
-              -- (нормальная сделка не даёт >70% дисконта от p25)
-              AND fp.first_price > gp.p25 * 0.30
+              -- ★ Discount cap: цены < 50% от p25 группы = junk
+              -- (битые/typo'ы продавцов/срочные продажи). Был 0.30, но
+              -- остаточные +200%-+300% margin показали что cap слишком мягкий.
+              AND fp.first_price > gp.p25 * 0.50
         )
         SELECT
             COUNT(*)::int AS total_signals,
@@ -1930,7 +1931,14 @@ async def get_backtest(
                                   AND cg.week = DATE_TRUNC('week', l.closed_at)
             WHERE {base_where}
               AND fp.first_price < gp.p25 * ${bt_idx}
-              AND fp.first_price > 0
+              -- ★ Top-10 показывает только "качественные" сделки:
+              -- min 1M ₸ (исключает vintage 1990-х за копейки которые
+              -- статистически ломают relevance), реальные модели (не
+              -- мусор парсера типа "(Lada)" / model == brand).
+              AND fp.first_price >= 1000000
+              AND fp.first_price > gp.p25 * 0.50
+              AND m.name NOT LIKE '(%'
+              AND LOWER(m.name) <> LOWER(b.name)
               AND NOT l.is_active
               AND l.closed_at IS NOT NULL
               AND EXTRACT(EPOCH FROM (l.closed_at - l.first_seen_at)) / 86400.0 <= ${hold_idx}
