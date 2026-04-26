@@ -58,11 +58,32 @@ async def get_price_history(
     source: list[str] = Query(None, description="kolesa, olx, mycar и т.д."),
     period_days: int = Query(90, ge=7, le=365, description="Глубина истории в днях"),
     include_inactive: bool = Query(False, description="Учитывать снятые объявления"),
+    granularity: str = Query(
+        "auto",
+        pattern="^(auto|day|week|month)$",
+        description="Шаг агрегации точек графика. auto = day для ≤14 дней, week для ≤180, month для остального.",
+    ),
 ):
     """
-    Базовый публичный график цен. Возвращает daily/weekly среднее за period_days.
-    Поддерживает множественный выбор (массивы) для фильтров.
+    Базовый публичный график цен. Возвращает avg + median сгруппированные по
+    выбранной гранулярности (день / неделя / месяц).
+
+    Зачем weekly default: на kolesa объявление меняет цену в среднем 1.1 раз
+    в месяц, поэтому daily-aggregation на 90д даёт разреженную и шумную
+    кривую — недельные бакеты на порядок чище.
     """
+    # Auto-resolve granularity на основе периода
+    if granularity == "auto":
+        if period_days <= 14:
+            granularity = "day"
+        elif period_days <= 180:
+            granularity = "week"
+        else:
+            granularity = "month"
+    # Whitelist уже валидирован regex'ом на param-уровне, но дополнительно фильтруем
+    # перед интерполяцией в SQL — granularity_resolved только из known set.
+    granularity_resolved = {"day": "day", "week": "week", "month": "month"}[granularity]
+
     conditions = ["ph.recorded_at >= NOW() - ($1 * INTERVAL '1 day')"]
     if not include_inactive:
         conditions.append("l.is_active = TRUE")
@@ -86,7 +107,7 @@ async def get_price_history(
     where = " AND ".join(conditions)
     query = f"""
         SELECT
-            DATE_TRUNC('day', ph.recorded_at) AS date,
+            DATE_TRUNC('{granularity_resolved}', ph.recorded_at) AS date,
             ROUND(AVG(ph.price_kzt))::bigint   AS avg_price_kzt,
             PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY ph.price_kzt)::bigint AS median_price_kzt,
             COUNT(DISTINCT l.id)               AS listing_count
@@ -94,12 +115,96 @@ async def get_price_history(
         JOIN listings l ON l.id = ph.listing_id
         JOIN sources  s ON s.id = l.source_id
         WHERE {where}
-        GROUP BY DATE_TRUNC('day', ph.recorded_at)
+        GROUP BY DATE_TRUNC('{granularity_resolved}', ph.recorded_at)
         ORDER BY date ASC
     """
     async with DBSession() as conn:
         rows = await conn.fetch(query, *params)
-    return [dict(r) for r in rows]
+    # Возвращаем гранулярность вместе с точками, чтобы фронт знал что показал бэк (для auto-режима)
+    return {
+        "granularity": granularity_resolved,
+        "points": [dict(r) for r in rows],
+    }
+
+
+@router.get("/price-candles", summary="Свечи распределения цен по времени")
+async def get_price_candles(
+    brand_id: Optional[int] = Query(None),
+    model_id: Optional[int] = Query(None),
+    city: list[str] = Query(None),
+    source: list[str] = Query(None),
+    period_days: int = Query(180, ge=14, le=730, description="Глубина истории в днях"),
+    granularity: str = Query(
+        "auto",
+        pattern="^(auto|day|week|month)$",
+        description="Шаг бакета. auto = week для ≤90 дней, month для остального.",
+    ),
+    include_inactive: bool = Query(False, description="Учитывать снятые объявления"),
+    min_count: int = Query(5, ge=1, le=50, description="Минимум точек в бакете для отображения"),
+):
+    """
+    Возвращает квартили цен по временным бакетам — distribution-style свечи
+    (не OHLC). Каждый бакет: P5 / Q1 / median / Q3 / P95 + count.
+
+    Frontend рисует свечи: тело = Q1-Q3, усы = P5-P95, точка = медиана,
+    цвет = направление медианы относительно прошлого бакета.
+    """
+    if granularity == "auto":
+        granularity = "week" if period_days <= 90 else "month"
+    granularity_resolved = {"day": "day", "week": "week", "month": "month"}[granularity]
+
+    conditions = [
+        "ph.recorded_at >= NOW() - ($1 * INTERVAL '1 day')",
+        "ph.price_kzt > 0",
+    ]
+    if not include_inactive:
+        conditions.append("l.is_active = TRUE")
+    params: list = [period_days]
+    i = 2
+
+    if brand_id:
+        conditions.append(f"l.brand_id = ${i}"); params.append(brand_id); i += 1
+    if model_id:
+        conditions.append(f"l.model_id = ${i}"); params.append(model_id); i += 1
+    if city:
+        conditions.append(f"l.city = ANY(${i}::text[])"); params.append(city); i += 1
+    if source:
+        conditions.append(f"s.name = ANY(${i}::text[])"); params.append(source); i += 1
+
+    where = " AND ".join(conditions)
+    params.append(min_count)
+    min_count_idx = i
+
+    query = f"""
+        WITH bucketed AS (
+            SELECT
+                DATE_TRUNC('{granularity_resolved}', ph.recorded_at) AS bucket,
+                ph.price_kzt AS price
+            FROM price_history ph
+            JOIN listings l ON l.id = ph.listing_id
+            JOIN sources  s ON s.id = l.source_id
+            WHERE {where}
+        )
+        SELECT
+            bucket AS date,
+            COUNT(*)::int AS count,
+            PERCENTILE_CONT(0.05) WITHIN GROUP (ORDER BY price)::bigint AS whisker_low,
+            PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY price)::bigint AS p25,
+            PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY price)::bigint AS median,
+            PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY price)::bigint AS p75,
+            PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY price)::bigint AS whisker_high
+        FROM bucketed
+        GROUP BY bucket
+        HAVING COUNT(*) >= ${min_count_idx}
+        ORDER BY bucket ASC
+    """
+    async with DBSession() as conn:
+        rows = await conn.fetch(query, *params)
+
+    return {
+        "granularity": granularity_resolved,
+        "candles": [dict(r) for r in rows],
+    }
 
 
 @router.get("/profitability", summary="Оценка рентабельности модели [PRO]",

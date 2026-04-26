@@ -15,9 +15,12 @@ interface DataPoint {
     listing_count: number;
 }
 
+type Granularity = 'day' | 'week' | 'month';
+
 interface PriceChartProps {
     data: DataPoint[];
     loading?: boolean;
+    granularity?: Granularity;
 }
 
 function formatPrice(val: number) {
@@ -26,26 +29,42 @@ function formatPrice(val: number) {
     return `${val} ₸`;
 }
 
-const CustomTooltip = ({ active, payload, label }: any) => {
-    if (!active || !payload?.length) return null;
-    return (
-        <div style={{
-            background: 'var(--surface-2)', border: '1px solid var(--border-strong)',
-            borderRadius: 6, padding: '10px 14px', fontSize: 12.5, fontFamily: 'var(--mono)',
-        }}>
-            <div style={{ color: '#7b8899', marginBottom: 8 }}>
-                {format(new Date(label), 'd MMM yyyy', { locale: ru })}
-            </div>
-            {payload.map((p: any) => (
-                <div key={p.name} style={{ color: p.color, marginBottom: 4 }}>
-                    {p.name}: <strong>{formatPrice(p.value)}</strong>
-                </div>
-            ))}
-        </div>
-    );
-};
+function tooltipDateFormat(d: string, g: Granularity) {
+    if (g === 'month') return format(new Date(d), 'LLLL yyyy', { locale: ru });
+    if (g === 'week') {
+        const start = new Date(d);
+        const end = new Date(start);
+        end.setDate(start.getDate() + 6);
+        return `${format(start, 'd MMM', { locale: ru })} – ${format(end, 'd MMM yyyy', { locale: ru })}`;
+    }
+    return format(new Date(d), 'd MMM yyyy', { locale: ru });
+}
 
-export default function PriceChart({ data, loading }: PriceChartProps) {
+function tickDateFormat(d: string, g: Granularity) {
+    if (g === 'month') return format(new Date(d), 'LLL', { locale: ru });
+    return format(new Date(d), 'd MMM', { locale: ru });
+}
+
+export default function PriceChart({ data, loading, granularity = 'day' }: PriceChartProps) {
+    const CustomTooltip = ({ active, payload, label }: any) => {
+        if (!active || !payload?.length) return null;
+        return (
+            <div style={{
+                background: 'var(--surface-2)', border: '1px solid var(--border-strong)',
+                borderRadius: 6, padding: '10px 14px', fontSize: 12.5, fontFamily: 'var(--mono)',
+            }}>
+                <div style={{ color: '#7b8899', marginBottom: 8 }}>
+                    {tooltipDateFormat(label, granularity)}
+                </div>
+                {payload.map((p: any) => (
+                    <div key={p.name} style={{ color: p.color, marginBottom: 4 }}>
+                        {p.name}: <strong>{formatPrice(p.value)}</strong>
+                    </div>
+                ))}
+            </div>
+        );
+    };
+
     if (loading) {
         return <div className="skeleton" style={{ height: 300, borderRadius: 14 }} />;
     }
@@ -72,7 +91,7 @@ export default function PriceChart({ data, loading }: PriceChartProps) {
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
                 <XAxis
                     dataKey="date"
-                    tickFormatter={(d) => format(new Date(d), 'd MMM', { locale: ru })}
+                    tickFormatter={(d) => tickDateFormat(d, granularity)}
                     tick={{ fill: '#7b8899', fontSize: 11 }}
                     axisLine={false} tickLine={false}
                 />

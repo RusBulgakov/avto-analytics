@@ -135,11 +135,17 @@ export default function ModelPage() {
     const historyParams = brand && model
         ? { brand_id: brand.id, model_id: model.id, period_days: period }
         : null;
-    const { data: priceHistory, isLoading: chartLoading } = useSWR<PricePoint[]>(
+    // /price-history shape: { granularity, points: PricePoint[] }
+    const { data: priceHistoryData, isLoading: chartLoading } = useSWR<{
+        granularity: 'day' | 'week' | 'month';
+        points: PricePoint[];
+    }>(
         historyParams ? ['price-history', historyParams] : null,
         () => analyticsApi.getPriceHistory(historyParams!),
         { keepPreviousData: true }
     );
+    const priceHistory = priceHistoryData?.points;
+    const priceHistoryGranularity = priceHistoryData?.granularity ?? 'day';
 
     // Recent listings (right column, top 10) — scoped by brand (API doesn't accept model_id)
     const recentParams = brand ? { brand_id: brand.id, limit: 10 } : null;
@@ -431,7 +437,11 @@ export default function ModelPage() {
                                 </div>
                             </div>
                             <div className="card-b">
-                                <PriceChart data={priceHistory ?? []} loading={chartLoading} />
+                                <PriceChart
+                                    data={priceHistory ?? []}
+                                    loading={chartLoading}
+                                    granularity={priceHistoryGranularity}
+                                />
                             </div>
                         </div>
                         <div className="card">

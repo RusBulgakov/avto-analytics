@@ -296,6 +296,7 @@ users / subscription_plans / user_subscriptions             — пользова
 | `GET` | `/api/v1/analytics/liquidity` | Воронка ликвидности: дней до продажи по корзинам |
 | `GET` | `/api/v1/analytics/recent` | Лента свежих объявлений (live feed) |
 | `GET` | `/api/v1/analytics/geo` | Карта KZ: координаты городов + объявления и ср. цена |
+| `GET` | `/api/v1/analytics/price-candles` | Свечи цен по времени: P5/Q1/median/Q3/P95 в бакетах day/week/month. `granularity=auto` (default) → week для ≤90д, month для остального. |
 
 ### Аналитика — детали объявления
 

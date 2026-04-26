@@ -1,4 +1,5 @@
 // pages/index.tsx — Dashboard (trading terminal redesign, steps 1–6)
+import { useState } from 'react';
 import Head from 'next/head';
 import useSWR from 'swr';
 
@@ -7,6 +8,7 @@ import FilterBar from '@/components/layout/FilterBar';
 import KPI from '@/components/ui/KPI';
 import Badge from '@/components/ui/Badge';
 import PriceChart from '@/components/charts/PriceChart';
+import PriceCandles, { type Candle, type Granularity } from '@/components/charts/PriceCandles';
 import BoxPlot from '@/components/charts/BoxPlot';
 import Heatmap, { type HeatmapCell } from '@/components/charts/Heatmap';
 import Funnel, { type FunnelBucket } from '@/components/charts/Funnel';
@@ -50,9 +52,45 @@ export default function Dashboard() {
         { keepPreviousData: true, refreshInterval: 60_000 }
     );
 
-    const { data: priceHistory, isLoading: chartLoading } = useSWR(
-        ['price-history', apiParams],
-        () => analyticsApi.getPriceHistory(apiParams),
+    // Granularity: user override for chart's time bucket. 'auto' lets backend
+    // pick (day for ≤14д, week for ≤180д, month for >180д). Backend echoes the
+    // resolved granularity back so PriceChart formats ticks/tooltips correctly.
+    const [chartGranularity, setChartGranularity] = useState<'auto' | Granularity>('auto');
+
+    const priceHistoryParams = {
+        ...apiParams,
+        ...(chartGranularity !== 'auto' ? { granularity: chartGranularity } : {}),
+    };
+    const { data: priceHistoryData, isLoading: chartLoading } = useSWR<{
+        granularity: Granularity;
+        points: { date: string; avg_price_kzt: number; median_price_kzt: number; listing_count: number }[];
+    }>(
+        ['price-history', priceHistoryParams],
+        () => analyticsApi.getPriceHistory(priceHistoryParams),
+        { keepPreviousData: true }
+    );
+    const priceHistory = priceHistoryData?.points ?? [];
+    const resolvedGranularity: Granularity = priceHistoryData?.granularity ?? 'day';
+
+    // Свечи цен — отдельный widget с собственным granularity (по умолчанию = week
+    // для 90д default period). Фильтры марки/города наследуем с дашборда.
+    const [candlesGranularity, setCandlesGranularity] = useState<'auto' | Granularity>('auto');
+    const candlesParams: Record<string, unknown> = {
+        period_days: filters.period === 'all' ? 365 : filters.period,
+        ...(candlesGranularity !== 'auto' ? { granularity: candlesGranularity } : {}),
+    };
+    if (filters.brand_id.length === 1) candlesParams.brand_id = filters.brand_id[0];
+    if (filters.model_id.length === 1) candlesParams.model_id = filters.model_id[0];
+    if (filters.city.length) candlesParams.city = filters.city;
+    if (filters.source.length) candlesParams.source = filters.source;
+    if (filters.include_inactive) candlesParams.include_inactive = true;
+
+    const { data: candlesData, isLoading: candlesLoading } = useSWR<{
+        granularity: Granularity;
+        candles: Candle[];
+    }>(
+        ['price-candles', candlesParams],
+        () => analyticsApi.getPriceCandles(candlesParams),
         { keepPreviousData: true }
     );
 
@@ -195,12 +233,30 @@ export default function Dashboard() {
                                     <div className="card-title">Динамика цен</div>
                                     <div className="card-sub">
                                         Средняя и медиана · период {filters.period === 'all' ? 'весь' : `${filters.period}д`}
+                                        {chartGranularity === 'auto' && priceHistoryData
+                                            ? ` · бакет ${resolvedGranularity === 'day' ? 'день' : resolvedGranularity === 'week' ? 'неделя' : 'месяц'}`
+                                            : null}
                                     </div>
                                 </div>
-                                <Badge variant="info">PRO: прогноз</Badge>
+                                <div className="period-group" role="group" aria-label="Шаг агрегации">
+                                    {(['auto', 'day', 'week', 'month'] as const).map(g => (
+                                        <button
+                                            key={g}
+                                            type="button"
+                                            className={`period-btn ${chartGranularity === g ? 'active' : ''}`}
+                                            onClick={() => setChartGranularity(g)}
+                                        >
+                                            {g === 'auto' ? 'авто' : g === 'day' ? '1д' : g === 'week' ? '1н' : '1м'}
+                                        </button>
+                                    ))}
+                                </div>
                             </div>
                             <div className="card-b">
-                                <PriceChart data={priceHistory ?? []} loading={chartLoading} />
+                                <PriceChart
+                                    data={priceHistory}
+                                    loading={chartLoading}
+                                    granularity={resolvedGranularity}
+                                />
                             </div>
                         </div>
 
@@ -301,6 +357,42 @@ export default function Dashboard() {
                                     <div style={{ color: 'var(--text-muted)', padding: 12 }}>Нет данных</div>
                                 )}
                             </div>
+                        </div>
+                    </section>
+
+                    {/* ── Свечи распределения цен по времени ───────────── */}
+                    <section className="card">
+                        <div className="card-h">
+                            <div>
+                                <div className="card-title">Свечи цен — распределение по времени</div>
+                                <div className="card-sub">
+                                    {filters.brand_id.length === 1 && filters.model_id.length === 1
+                                        ? 'выбранная модель'
+                                        : filters.brand_id.length === 1
+                                            ? 'выбранная марка'
+                                            : 'весь рынок'}
+                                    {' · '}тело Q1–Q3, усы P5–P95, медиана = тик
+                                </div>
+                            </div>
+                            <div className="period-group" role="group" aria-label="Шаг бакета свечей">
+                                {(['auto', 'day', 'week', 'month'] as const).map(g => (
+                                    <button
+                                        key={g}
+                                        type="button"
+                                        className={`period-btn ${candlesGranularity === g ? 'active' : ''}`}
+                                        onClick={() => setCandlesGranularity(g)}
+                                    >
+                                        {g === 'auto' ? 'авто' : g === 'day' ? '1д' : g === 'week' ? '1н' : '1м'}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                        <div className="card-b">
+                            <PriceCandles
+                                data={candlesData?.candles ?? []}
+                                granularity={candlesData?.granularity ?? 'week'}
+                                loading={candlesLoading}
+                            />
                         </div>
                     </section>
 

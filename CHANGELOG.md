@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-04-26 — Time-aggregated charts: weekly price-history + price-candles widget
+
+### Added
+- **`/api/v1/analytics/price-candles`** — новый endpoint, возвращает квартили цен (P5/Q1/median/Q3/P95) по временным бакетам. Параметры: `period_days` (14–730, default 180), `granularity` ('auto'|'day'|'week'|'month', auto = week для ≤90д иначе month), `min_count` (минимум точек в бакете, default 5), плюс стандартные фильтры (brand_id, model_id, city, source, include_inactive). Ответ: `{granularity, candles: [{date, count, whisker_low, p25, median, p75, whisker_high}]}`.
+- **`granularity` query-param в `/price-history`** — `'auto'|'day'|'week'|'month'`. Auto: ≤14д→day, ≤180д→week, >180д→month. Работает потому что в среднем на kolesa объявление меняет цену 1.1 раз в месяц — daily-бакеты дают разреженную шумную кривую.
+- **`PriceCandles`** (`frontend/components/charts/PriceCandles.tsx`) — кастомный SVG-компонент distribution-style свечей. Тело = Q1–Q3, усы = P5–P95, медиана = тик, цвет = направление медианы относительно прошлого бакета (up/down). Hover = детали бакета внизу карточки.
+- **Granularity chip-group в card-h "Динамика цен"** (`[авто] [1д] [1н] [1м]`) — пользователь может переопределить auto-resolve.
+- **Новая section "Свечи цен — распределение по времени"** на дашборде, прямо перед "Распределение цен по маркам". Свой собственный chip-group для granularity. Реагирует на фильтры (brand/model/city/source/include_inactive).
+
+### Breaking
+- **`/api/v1/analytics/price-history` return shape**: было `[{date, avg_price_kzt, ...}]`, стало `{granularity: 'day'|'week'|'month', points: [{date, avg_price_kzt, ...}]}`. Frontend (`index.tsx`, `model.tsx`) обновлены — извлекают `.points` и `.granularity`. Если есть внешние consumer'ы — придётся адаптировать.
+
+### Changed
+- `analyticsApi.getPriceCandles` добавлен в `frontend/lib/api.ts`.
+- `PriceChart` теперь принимает `granularity?: 'day'|'week'|'month'` для корректного форматирования tick'ов и tooltip'ов (для week — диапазон "1 апр – 7 апр", для month — "Апрель 2026").
+
+### Why
+Машины не меняют цену день в день: реальный rate ≈ 1 запись price_history per listing per month. Daily-бакеты для длинных периодов (90д+) производили шумную лесенку; weekly-бакеты сглаживают и делают тренды читаемыми. Свечи же показывают, что разброс цен на новостройку и битое сильно отличается даже внутри одной модели — и это нужный сигнал для трейдера.
+
+---
+
 ## 2026-04-22 — Active/All toggle (исторический режим)
 
 ### Added
