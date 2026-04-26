@@ -62,6 +62,49 @@ UPDATE listings l SET model_id = NULL FROM models m
 
 ---
 
+## 2026-04-26 — Backtest: честное название колонки + market_movement metric
+
+### Why
+Юзер: "откуда значения 'Купил'? у нас же нет данных за какую цену была куплена машина?"
+
+**Признаюсь — колонка называлась неверно.** "Купил" подразумевало реальную сделку, но у нас нет транзакционных данных. На самом деле это **first_price** = первая запись `price_history` для listing'а = цена которую seller указал при создании объявления.
+
+Также — главная метрика `arb_margin = (p25_close / first_price - 1)` была **тавтологией**: signals выбираются по условию `first_price < p25 × 0.85`, то есть положительная "арб" встроена в определение signal'а, не в реальное движение рынка.
+
+### Added
+- **`market_p25_at_entry`**: p25 группы (brand+model+year) на момент когда listing появился
+- **`entry_discount`**: насколько ниже p25 был listing на момент входа = `(p25_entry / entry_price - 1)`
+- **`market_movement`**: реальное движение рынка за время удержания = `(p25_close - p25_entry) / p25_entry`. Это **истинная α** — насколько группа двинулась независимо от конкретного listing.
+- **Renamed**: `buy_price` → `entry_price` (legacy alias сохранён для backward-compat)
+
+### Changed UI (`/forecast` backtest section)
+- Колонка **"Купил"** → **"Цена входа"** с tooltip "Первая цена в объявлении (не реальная сделка)"
+- Добавлены 2 новые колонки: **"p25 входа"** + **"Δ рынка"** (color-coded green/red если >5%)
+- Total arb остаётся, но в tooltip пояснено что это сумма "entry discount" + "market movement"
+- **Methodology card переписана** — большой honest disclaimer:
+  > Backtest — это симуляция, не история сделок. У нас нет данных о реальных транзакциях. "Цена входа" = первая запись price_history (то что продавец указал при создании объявления)…
+
+### Validated на проде (top-7 по market_movement)
+```
+Auto                       Entry   p25_entry  p25_close   Δ market   Total arb
+Nissan Almera 2017         2.10M   2.50M      4.20M       +68.0%     +100.0%
+Renault Duster 2020        2.35M   3.89M      6.50M       +67.1%     +176.6%
+Toyota Land Cruiser Prado  3.00M   3.75M      6.22M       +66.0%     +107.5%
+Subaru Forester 2016       3.90M   4.60M      7.59M       +65.0%     +94.6%
+```
+
+Теперь видна истинная декомпозиция: например Renault Duster был на 40% ниже p25 в момент входа (entry_discount), а сам рынок двинулся ещё на +67% за 18 дней (market_movement). Total = ~177%. Раньше показывали только Total как "арб", без разбиения на initial discount + market drift.
+
+### Известное ограничение
++60-70% market_movement за 18-30 дней — **слишком высоко** чтобы быть устойчивым real-world сигналом. Скорее всего:
+1. Group p25 нестабилен на малых выборках — один dropout двигает p25 на 20%+
+2. Наша история ~60 дней — short, sample composition меняется agressively week-to-week
+3. Возможны parser flakeyness — group-window inclusion shifts
+
+Когда соберём 6+ месяцев данных и выровняем sample composition — market_movement станет более robust метрикой. Сейчас это **direction-correct** (показывает что рынок растёт), но magnitude inflated.
+
+---
+
 ## 2026-04-26 — Backtest top-10: outlier guards для display-tier
 
 ### Why

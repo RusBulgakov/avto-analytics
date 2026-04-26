@@ -67,11 +67,19 @@ interface BacktestResp {
     median_days_to_sell: number | null;
     top_winners: {
         brand: string; model: string; year: number;
-        buy_price: number; sell_price: number;
-        market_p25_at_close: number | null;
-        arb_margin: number | null;
+        // V3 fields (new)
+        entry_price: number;             // = buy_price legacy
+        market_p25_at_entry: number | null;  // p25 группы когда listing появился
+        market_p25_at_close: number | null;  // p25 группы когда listing закрылся
+        entry_discount: number | null;       // (p25_entry - entry) / entry → насколько ниже p25 был entry
+        market_movement: number | null;      // (p25_close - p25_entry) / p25_entry → движение рынка
+        arb_margin: number | null;           // total = (1 + entry_discount) × (1 + market_movement) - 1
+        // legacy
+        buy_price: number;
+        sell_price: number;
         listing_margin: number | null;
-        days: number; url: string;
+        days: number;
+        url: string;
     }[];
     error?: string;
 }
@@ -555,9 +563,21 @@ export default function ForecastPage() {
                                                 <thead>
                                                     <tr>
                                                         <th>Авто</th>
-                                                        <th className="right">Купил</th>
-                                                        <th className="right">Market p25</th>
-                                                        <th className="right">Arb margin</th>
+                                                        <th className="right" title="Первая цена в объявлении (не реальная сделка)">Цена входа</th>
+                                                        <th className="right" title="p25 группы когда listing появился">p25 входа</th>
+                                                        <th className="right" title="p25 группы когда listing закрылся">p25 выхода</th>
+                                                        <th
+                                                            className="right"
+                                                            title="(p25_close − p25_entry) / p25_entry — насколько рынок сам двинулся за время"
+                                                        >
+                                                            Δ рынка
+                                                        </th>
+                                                        <th
+                                                            className="right"
+                                                            title="(p25_close / entry − 1) — сколько мог бы заработать если купил по entry и продал по market"
+                                                        >
+                                                            Total arb
+                                                        </th>
                                                         <th className="right">Дней</th>
                                                     </tr>
                                                 </thead>
@@ -571,9 +591,19 @@ export default function ForecastPage() {
                                                                     <span className="mono dim">{w.year}</span>
                                                                 </a>
                                                             </td>
-                                                            <td className="num">{fmt.price(w.buy_price)}</td>
+                                                            <td className="num">{fmt.price(w.entry_price ?? w.buy_price)}</td>
+                                                            <td className="num">
+                                                                {w.market_p25_at_entry != null ? fmt.price(w.market_p25_at_entry) : '—'}
+                                                            </td>
                                                             <td className="num">
                                                                 {w.market_p25_at_close != null ? fmt.price(w.market_p25_at_close) : '—'}
+                                                            </td>
+                                                            <td className="num">
+                                                                {w.market_movement != null ? (
+                                                                    <span style={{ color: w.market_movement > 0.05 ? 'var(--up)' : w.market_movement < -0.05 ? 'var(--down)' : 'var(--text-muted)' }}>
+                                                                        {w.market_movement > 0 ? '+' : ''}{(w.market_movement * 100).toFixed(1)}%
+                                                                    </span>
+                                                                ) : '—'}
                                                             </td>
                                                             <td className="num">
                                                                 {w.arb_margin != null ? (
@@ -616,10 +646,14 @@ export default function ForecastPage() {
                             <div>
                                 <strong>Forecast V2</strong> — OLS regression на двух осях: KZT и USD. Курс берётся из <code>fx_history</code> (NBK API daily).
                                 FX-вклад показывает сколько из тренда KZT-цен объясняется движением тенге, а сколько — реальным движением рынка.
+                                <br /><br />
+                                <strong>Backtest — это симуляция, не история сделок.</strong> У нас нет данных о реальных транзакциях. "Цена входа" = первая запись price_history (то что продавец указал при создании объявления). Метрики измеряют "что бы получилось если бы трейдер мог купить листинг по выставленной цене и потом перепродать по текущей рыночной p25 группы". В реальности продавец может не согласиться на listed price, и продажа на market p25 требует своих усилий и времени.
+                                <ul style={{ marginTop: 6, marginBottom: 0, paddingLeft: 18 }}>
+                                    <li><strong>Δ рынка</strong> = (p25 на выходе − p25 на входе) / p25 на входе. Это <em>реальный</em> drift — насколько группа двигалась без участия конкретного listing.</li>
+                                    <li><strong>Total arb</strong> = (p25_close − entry) / entry. Это сумма entry-дисконта + market drift — сколько максимум мог бы заработать.</li>
+                                </ul>
                                 <br />
-                                <strong>Backtest</strong> — стратегия «купить листинг чья first_price на 15% ниже p25 группы (brand/model/year/неделя), продать в течение 45 дней». Margin = (last_price - first_price) / first_price. Это approximation — реальная цена сделки может быть ниже на 1-3% (торг). Junk-листинги (битые / не растаможенные) исключены из обеих метрик.
-                                <br />
-                                R² ниже 0.3 = данные шумные → попробуйте сузить группу (конкретный год / модель).
+                                Junk-листинги (битые / не растаможенные / на заказ) исключены. R² ниже 0.3 = данные шумные → попробуйте сузить группу (конкретный год / модель).
                             </div>
                         </div>
                     </div>

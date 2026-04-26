@@ -1911,11 +1911,21 @@ async def get_backtest(
                 HAVING COUNT(*) >= 5
             )
             SELECT b.name AS brand, m.name AS model, l.year,
-                   fp.first_price::bigint AS buy,
+                   fp.first_price::bigint AS entry_price,
                    lp.last_price::bigint AS sell,
                    cg.p25::bigint AS market_p25_at_close,
+                   gp.p25::bigint AS market_p25_at_entry,
+                   -- Initial discount: насколько ниже p25 был listing когда появился
+                   (gp.p25 / NULLIF(fp.first_price, 0) - 1)::numeric(8, 4) AS entry_discount,
+                   -- Listing margin (V1 legacy): seller-side change
                    (lp.last_price / NULLIF(fp.first_price, 0) - 1)::numeric(8, 4) AS listing_margin,
+                   -- Total arb (V2): listing entry vs market p25 at close
                    (cg.p25 / NULLIF(fp.first_price, 0) - 1)::numeric(8, 4) AS arb_margin,
+                   -- ★ Market movement: REAL alpha от движения рынка
+                   --   = (p25_close - p25_entry) / p25_entry
+                   --   Положительный → рынок вырос с момента появления листинга
+                   --   Это true arbitrage возможность, не tautology
+                   ((cg.p25 - gp.p25) / NULLIF(gp.p25, 0))::numeric(8, 4) AS market_movement,
                    EXTRACT(EPOCH FROM (l.closed_at - l.first_seen_at)) / 86400.0 AS days,
                    l.listing_url
             FROM listings l
@@ -1995,13 +2005,18 @@ async def get_backtest(
                 "brand": r["brand"],
                 "model": r["model"],
                 "year": r["year"],
-                "buy_price": int(r["buy"]),
+                "entry_price": int(r["entry_price"]),
                 "sell_price": int(r["sell"]),
+                "market_p25_at_entry": int(r["market_p25_at_entry"]) if r["market_p25_at_entry"] else None,
                 "market_p25_at_close": int(r["market_p25_at_close"]) if r["market_p25_at_close"] else None,
+                "entry_discount": float(r["entry_discount"]) if r["entry_discount"] is not None else None,
                 "arb_margin": float(r["arb_margin"]) if r["arb_margin"] is not None else None,
+                "market_movement": float(r["market_movement"]) if r["market_movement"] is not None else None,
                 "listing_margin": float(r["listing_margin"]) if r["listing_margin"] is not None else None,
                 "days": float(r["days"]),
                 "url": r["listing_url"],
+                # legacy alias
+                "buy_price": int(r["entry_price"]),
             }
             for r in top_rows
         ],
