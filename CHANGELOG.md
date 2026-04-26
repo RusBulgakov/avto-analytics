@@ -62,6 +62,31 @@ UPDATE listings l SET model_id = NULL FROM models m
 
 ---
 
+## 2026-04-26 — Boost coverage: OLX per-city + mycar no-proxy
+
+### Changed
+- **`parsers/olx/parser.py`**: один root-фид → **16 фидов** (root + 15 per-city). OLX режет global pagination на ~10 страниц (~400 объявлений из десятков тысяч). Per-city фиды (`q-almaty/`, `q-astana/`, …) обходят этот cap. Добавлен **across-feeds dedup** через `seen_ids: set` — один и тот же `external_id` не сохраняется дважды если попался в нескольких фидах. **Stop-on-repeat-page**: если все ID на текущей странице уже видели — стоп (защита от OLX-зацикленной пагинации). Delay уменьшен 5–14с → 2.5–5с между страницами одного фида + 8–15с между фидами.
+- **`parsers/mycar/parser.py`**: `use_proxy=True` → **`False`** (публичный REST API не блочит, бесплатные прокси добавляли 30-45с retry-задержки впустую). `PAGE_SIZE=24` → **50** (API позволяет, in 2× меньше запросов на тот же объём). `MAX_PAGES=200` → **600** (теоретический потолок 30k вместо 4.8k). Между запросами `sleep 2.0` → **1.0** (REST быстрее HTML). Логирование reduced: every 10-я page или последняя.
+
+### Why
+До фикса:
+```
+kolesa     53,874  (96%)
+mycar       1,244
+olx           372    ← на olx.kz реально десятки тысяч
+newauto       241    (полный inventory новых авто, OK)
+avtorynok     227    (сайт by design ограничивает ~16 active, OK)
+```
+OLX парсер вообще не видел >400 объявлений всего из-за site-pagination cap. mycar был зажат прокси-задержками + малым page-size + хардкод 200 страниц.
+
+### Expected impact
+После следующих GHA-прогонов:
+- **OLX**: 372 → ~5,000–10,000 active (16 фидов × ~10 страниц × ~40 cards, минус дубли)
+- **mycar**: 1,244 → ~5,000–8,000 active (300+ страниц на 50 cards без прокси-троттлинга)
+- **Total non-kolesa**: 4% → 15–25% от объёма платформы.
+
+---
+
 ## 2026-04-26 — City normalization: 14+ городов добавлены на карту
 
 ### Added

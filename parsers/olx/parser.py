@@ -19,9 +19,33 @@ from parsers.common.proxy_manager import proxy_manager
 logger = logging.getLogger("parser.olx")
 
 BASE_URL = "https://www.olx.kz"
-LIST_URL = f"{BASE_URL}/transport/legkovye-avtomobili/"
-# Нет жёсткого лимита — останавливаемся по пустой странице
-MAX_PAGES = 500
+ROOT_LIST = f"{BASE_URL}/transport/legkovye-avtomobili/"
+# Per-city feeds. OLX режет глобальную pagination на ~10 страниц (только
+# первые ~400 объявлений из десятков тысяч). Чтобы обойти — парсим
+# каждый из 15 крупных городов KZ как отдельный фид. Каждый дает свой лимит
+# pagination; объединение покрывает весь рынок.
+CITY_FEEDS = [
+    f"{ROOT_LIST}q-almaty/",
+    f"{ROOT_LIST}q-astana/",
+    f"{ROOT_LIST}q-shymkent/",
+    f"{ROOT_LIST}q-karaganda/",
+    f"{ROOT_LIST}q-aktobe/",
+    f"{ROOT_LIST}q-taraz/",
+    f"{ROOT_LIST}q-pavlodar/",
+    f"{ROOT_LIST}q-ust-kamenogorsk/",
+    f"{ROOT_LIST}q-semey/",
+    f"{ROOT_LIST}q-kostanay/",
+    f"{ROOT_LIST}q-atyrau/",
+    f"{ROOT_LIST}q-petropavlovsk/",
+    f"{ROOT_LIST}q-uralsk/",
+    f"{ROOT_LIST}q-aktau/",
+    f"{ROOT_LIST}q-kyzylorda/",
+]
+# Корневой фид + per-city. Корневой даёт топ-listings всего KZ.
+ALL_FEEDS = [ROOT_LIST] + CITY_FEEDS
+# Per-feed лимит. OLX обычно блочит после 10-25 страниц на одной search.
+# Останавливаемся раньше при пустом или повторе.
+MAX_PAGES = 30
 
 
 def _slug(text: Optional[str]) -> Optional[str]:
@@ -104,12 +128,12 @@ def _parse_card(card) -> Optional[dict]:
         return None
 
 
-async def parse_page(page: int, session=None) -> list[dict]:
+async def parse_page(feed_url: str, page: int, session=None) -> list[dict]:
     params = {"page": page} if page > 1 else None
     try:
-        html = await fetch(LIST_URL, params=params, use_proxy=True, session=session)
+        html = await fetch(feed_url, params=params, use_proxy=True, session=session)
     except Exception as e:
-        logger.error("OLX страница %d недоступна: %s", page, e)
+        logger.error("OLX feed=%s page=%d error: %s", feed_url, page, e)
         return []
 
     soup = BeautifulSoup(html, "lxml")
@@ -118,32 +142,58 @@ async def parse_page(page: int, session=None) -> list[dict]:
     return [r for r in results if r and r["external_id"]]
 
 
+async def parse_feed(feed_url: str, session, conn, seen_ids: set) -> tuple[int, int]:
+    """Один фид (root либо per-city). Останавливается на пустой странице или
+    при повторе IDs (OLX иногда зацикливается в pagination)."""
+    saved = 0
+    new = 0
+    for page in range(1, MAX_PAGES + 1):
+        listings = await parse_page(feed_url, page, session)
+        if not listings:
+            logger.info("OLX feed=%s page=%d пусто — стоп.", feed_url, page)
+            break
+
+        # Stop-on-repeat: если все ID на странице мы уже видели в этом проходе
+        new_ids = [l["external_id"] for l in listings if l["external_id"] not in seen_ids]
+        if not new_ids:
+            logger.info("OLX feed=%s page=%d — все ID уже виделись, стоп.", feed_url, page)
+            break
+        for l in listings:
+            seen_ids.add(l["external_id"])
+
+        for item in listings:
+            _, is_new = await save_listing(conn, item)
+            saved += 1
+            if is_new:
+                new += 1
+
+        logger.info("OLX feed=%s page=%d: %d items (%d новых ID)", feed_url, page, len(listings), len(new_ids))
+        await asyncio.sleep(random.uniform(2.5, 5.0))
+    return saved, new
+
+
 async def run_parser() -> tuple[int, int]:
-    logger.info("Старт парсинга OLX.kz (без лимита страниц)")
+    logger.info("Старт OLX.kz — %d фидов (root + %d городов)", len(ALL_FEEDS), len(CITY_FEEDS))
     await proxy_manager.refresh()
     total_saved = 0
     total_new = 0
+    seen_ids: set = set()  # глобальный across-feeds dedup чтобы не дублировать save
 
     async with db_conn() as conn:
         from curl_cffi import requests
         async with requests.AsyncSession(impersonate="chrome") as session:
-            for page in range(1, MAX_PAGES + 1):
-                listings = await parse_page(page, session)
-                if not listings:
-                    logger.info("Страница %d OLX пуста — останавливаемся.", page)
-                    break
-                for item in listings:
-                    _, is_new = await save_listing(conn, item)
-                    total_saved += 1
-                    if is_new:
-                        total_new += 1
+            for i, feed in enumerate(ALL_FEEDS):
+                logger.info("OLX [%d/%d] feed=%s", i + 1, len(ALL_FEEDS), feed)
+                try:
+                    s, n = await parse_feed(feed, session, conn, seen_ids)
+                    total_saved += s
+                    total_new += n
+                except Exception as e:
+                    logger.error("OLX feed=%s упал: %s", feed, e)
+                # Между фидами пауза побольше — OLX может троттлить
+                await asyncio.sleep(random.uniform(8.0, 15.0))
 
-                logger.info("OLX страница %d: обработано %d объявлений", page, len(listings))
-
-                delay = random.uniform(5.0, 14.0)
-                await asyncio.sleep(delay)
-
-    logger.info("Парсинг OLX.kz завершён. Всего: %d, новых: %d", total_saved, total_new)
+    logger.info("OLX завершён. Всего: %d, новых: %d, unique_ids: %d", total_saved, total_new, len(seen_ids))
     return total_saved, total_new
 
 

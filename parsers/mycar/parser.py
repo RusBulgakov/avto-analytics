@@ -12,8 +12,8 @@ from parsers.common.proxy_manager import proxy_manager
 logger = logging.getLogger("parser.mycar")
 BASE_URL = "https://mycar.kz"
 API_URL = "https://api.mycar.kz/cars/api/publications/"
-PAGE_SIZE = 24
-MAX_PAGES = 200  # запасной лимит; реальный стоп — по data["next"]
+PAGE_SIZE = 50           # API позволяет до 50 на страницу — выгружаем больше за запрос
+MAX_PAGES = 600          # 50 × 600 = до 30k объявлений; реальный стоп — data["next"]=null
 
 
 def _slug(t: Optional[str]) -> Optional[str]:
@@ -131,11 +131,13 @@ async def run_parser() -> tuple[int, int]:
             for page in range(0, MAX_PAGES):
                 offset = page * PAGE_SIZE
                 try:
+                    # use_proxy=False — public REST API mycar отдаёт всем; бесплатные
+                    # прокси добавляют 30-45с задержки на retry-цикл, без выигрыша.
                     data = await fetch(
                         API_URL,
                         params={"ordering": "-modified", "limit": PAGE_SIZE, "offset": offset},
                         json=True,
-                        use_proxy=True,
+                        use_proxy=False,
                         session=sess,
                     )
                 except Exception as e:
@@ -155,11 +157,13 @@ async def run_parser() -> tuple[int, int]:
                     if is_new:
                         new_total += 1
 
-                logger.info("mycar offset=%d: %d объявлений", offset, len(items))
-                await asyncio.sleep(2)
+                if page % 10 == 0 or len(items) < PAGE_SIZE:
+                    logger.info("mycar offset=%d: %d объявлений (total=%d, new=%d)", offset, len(items), total, new_total)
+                await asyncio.sleep(1.0)  # API быстрее чем HTML — короткая пауза
 
                 # API возвращает next=null если страниц больше нет
                 if not data.get("next"):
+                    logger.info("mycar: next=null на offset=%d — конец фида", offset)
                     break
 
     logger.info("mycar завершён: %d, новых: %d", total, new_total)
