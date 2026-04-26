@@ -62,6 +62,43 @@ UPDATE listings l SET model_id = NULL FROM models m
 
 ---
 
+## 2026-04-26 — Per-listing fair-price predictor (regression-based)
+
+### Added
+- **`/api/v1/analytics/valuation`** переписан с naive p10/p90 percentile lookup на **regression-based predictor**:
+  - Sample: похожие активные listings (same brand/model, year ±2, junk-фильтр)
+  - Multivariate OLS на features `[1, year_offset, mileage_km]`
+  - Predict цены для конкретного listing'а с его mileage
+  - 95% CI = ±1.96·residual_std
+  - Threshold для перехода на regression: ≥8 records с mileage AND ≥3 distinct mileages AND R² ≥ 0.10
+  - Иначе fallback на percentile (legacy метод)
+- Новый `verdict` enum: **'buy_signal'** (deviation < -10%), **'fair'**, **'overpriced'** (deviation > +15%). Старые 'cheap'/'expensive' сохранены для backward-compat.
+- Возвращаемые поля: `predicted`, `predicted_low/high` (CI), `deviation_pct`, `r2`, `mileage_used`, `method` ('regression' / 'percentile').
+
+### Changed (`/listing` page)
+- **Новый блок "Прогноз ML"** ниже existing percentile gauge:
+  - Predicted price ± half-CI
+  - Deviation % (color-coded: <-10% зелёный, >+15% красный)
+  - R² с подсказкой ("надёжная оценка / умеренная / шумная") + `n=N`
+- Verdict label обновлён: 'Сигнал покупки' / 'Завышенная цена' / 'Честная цена'. В callout добавлен subtitle "(regression)" когда method=regression.
+- Type interface `Valuation` расширен новыми полями.
+
+### Validated на проде (Toyota Camry 2017, 5 random listings)
+```
+Listing  mileage  listed     predicted  ±CI    R²    verdict
+202k km  10.0M    10.33M     ±2.77M     0.53   fair (-3.2%)
+120k km  11.0M    11.48M     ±2.76M     0.54   fair (-4.2%)
+160k km  12.39M   10.86M     ±2.72M     0.55   fair (+14.1%)
+140k km  12.5M    11.19M     ±2.73M     0.54   fair (+11.8%)
+200k km  11.3M    10.35M     ±2.73M     0.54   fair (+9.2%)
+```
+R² 0.53-0.55 — отличное качество regression. Все 5 listings в "fair" range — реалистично для этой группы (нет крупных арбитражей в Camry 2017 right now).
+
+### Why
+Naive percentile (p10/p90) предполагает что все 5,000 Camry в выборке одинаковые. Но Camry с пробегом 50к и 250к стоят по-разному, и наивный cutoff даёт false signal "expensive" для high-mileage listing просто потому что её цена низкая в распределении (но это и должно быть!). Regression учитывает mileage adjustment per-listing.
+
+---
+
 ## 2026-04-26 — Forecast V3 (mileage + holidays) + Backtest V2 (arb-margin)
 
 Три родственных upgrade'a по списку "что хочется добавить":

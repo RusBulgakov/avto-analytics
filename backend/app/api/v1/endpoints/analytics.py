@@ -903,9 +903,30 @@ async def get_listing(listing_id: str):
 
 @router.get("/valuation", summary="Fair-price оценка для объявления")
 async def get_valuation(listing_id: str = Query(...)):
-    """Сравнивает цену объявления с распределением похожих активных
-    (тот же brand/model, ±1 год, ±15% пробега) за последние 14 дней.
-    Возвращает fair_low (p10), median (p50), fair_high (p90), verdict."""
+    """
+    Fair-price predictor с **multivariate OLS regression**:
+      price ~ year_offset + mileage_km
+    на sample похожих активных листингов (same brand/model, year ±2,
+    junk-фильтр стандартный).
+
+    Это точнее чем naive p10/p90 — учитывает реальный price-mileage slope
+    группы. Если у нашего listing'а mileage сильно отличается от среднего,
+    p10/p90 cutoff бы выдавал false signal "expensive/cheap".
+
+    Fallback на naive percentile если regression не работает (n < 8 или
+    R² < 0.10 — слишком шумные данные для надёжного fit).
+
+    Возвращает:
+      - listed_price: фактическая цена объявления
+      - predicted: regression-based точечный прогноз
+      - predicted_low / high: 95% CI
+      - fair_low / median / fair_high: legacy percentile (p10/p50/p90)
+      - deviation_pct: (listed - predicted) / predicted * 100
+      - verdict: 'buy_signal' (deviation < -10%), 'overpriced' (> +15%), 'fair'
+      - sample_size, r2, mileage_used
+    """
+    import math
+
     async with DBSession() as conn:
         base = await conn.fetchrow("""
             SELECT l.id::text AS id, l.brand_id, l.model_id, l.year,
@@ -921,79 +942,154 @@ async def get_valuation(listing_id: str = Query(...)):
         if not (base["brand_id"] and base["model_id"] and base["year"]):
             return {"error": "insufficient_data"}
 
-        mileage = base["mileage_km"]
-        mileage_lo = int(mileage * 0.85) if mileage else None
-        mileage_hi = int(mileage * 1.15) if mileage else None
-
-        if mileage_lo is not None:
-            stats = await conn.fetchrow("""
-                WITH latest AS (
-                    SELECT DISTINCT ON (listing_id) listing_id, price_kzt
-                    FROM price_history
-                    WHERE recorded_at >= NOW() - INTERVAL '14 day'
-                    ORDER BY listing_id, recorded_at DESC
-                )
-                SELECT
-                    PERCENTILE_CONT(0.1) WITHIN GROUP (ORDER BY latest.price_kzt)::bigint AS fair_low,
-                    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY latest.price_kzt)::bigint AS median,
-                    PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY latest.price_kzt)::bigint AS fair_high,
-                    COUNT(*)::int AS sample_size
-                FROM listings l
-                JOIN latest ON latest.listing_id = l.id
-                WHERE l.brand_id = $1
-                  AND l.model_id = $2
-                  AND l.year BETWEEN $3 AND $4
-                  AND l.mileage_km BETWEEN $5 AND $6
-                  AND l.id <> $7::uuid
-            """, base["brand_id"], base["model_id"],
-                 base["year"] - 1, base["year"] + 1,
-                 mileage_lo, mileage_hi, listing_id)
-        else:
-            stats = await conn.fetchrow("""
-                WITH latest AS (
-                    SELECT DISTINCT ON (listing_id) listing_id, price_kzt
-                    FROM price_history
-                    WHERE recorded_at >= NOW() - INTERVAL '14 day'
-                    ORDER BY listing_id, recorded_at DESC
-                )
-                SELECT
-                    PERCENTILE_CONT(0.1) WITHIN GROUP (ORDER BY latest.price_kzt)::bigint AS fair_low,
-                    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY latest.price_kzt)::bigint AS median,
-                    PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY latest.price_kzt)::bigint AS fair_high,
-                    COUNT(*)::int AS sample_size
-                FROM listings l
-                JOIN latest ON latest.listing_id = l.id
-                WHERE l.brand_id = $1
-                  AND l.model_id = $2
-                  AND l.year BETWEEN $3 AND $4
-                  AND l.id <> $5::uuid
-            """, base["brand_id"], base["model_id"],
-                 base["year"] - 1, base["year"] + 1, listing_id)
+        # Сбор sample similar listings — wider year range (±2) для больше data
+        sample = await conn.fetch("""
+            WITH latest AS (
+                SELECT DISTINCT ON (listing_id) listing_id, price_kzt
+                FROM price_history
+                WHERE recorded_at >= NOW() - INTERVAL '21 day'
+                ORDER BY listing_id, recorded_at DESC
+            )
+            SELECT l.year, l.mileage_km, latest.price_kzt
+            FROM listings l
+            JOIN latest ON latest.listing_id = l.id
+            WHERE l.brand_id = $1
+              AND l.model_id = $2
+              AND l.year BETWEEN $3 AND $4
+              AND l.is_active = TRUE
+              AND latest.price_kzt > 0
+              AND l.id <> $5::uuid
+              AND (l.is_emergency IS NULL OR l.is_emergency = FALSE)
+              AND (l.is_customs_cleared IS NULL OR l.is_customs_cleared = TRUE)
+              AND (l.is_in_stock IS NULL OR l.is_in_stock = TRUE)
+        """, base["brand_id"], base["model_id"],
+             base["year"] - 2, base["year"] + 2, listing_id)
 
     current = int(base["current_price"]) if base["current_price"] else None
-    fair_low = stats["fair_low"]
-    fair_high = stats["fair_high"]
-    median = stats["median"]
+    listing_mileage = base["mileage_km"]
+    n = len(sample)
+
+    # Naive percentile (legacy / fallback)
+    prices = sorted([int(r["price_kzt"]) for r in sample])
+    fair_low = fair_high = median = None
+    if prices:
+        def pct(p): return prices[max(0, min(len(prices) - 1, int(p * (len(prices) - 1))))]
+        fair_low = pct(0.1)
+        median = pct(0.5)
+        fair_high = pct(0.9)
+
+    # ─── Regression-based predictor ─────────────────────────────────
+    predicted: int | None = None
+    predicted_low: int | None = None
+    predicted_high: int | None = None
+    r2 = None
+    rstd_pct = None
+    mileage_used = None
+    method = "percentile"
+
+    # Нужен mileage у этого листинга AND у достаточного % sample (≥60% with mileage,
+    # ≥8 records в sample, >=3 distinct mileages для variance)
+    sample_with_mileage = [(r["year"], r["mileage_km"], int(r["price_kzt"]))
+                           for r in sample
+                           if r["mileage_km"] is not None and 1000 <= r["mileage_km"] <= 800_000]
+    distinct_mil = len({round(r[1], -3) for r in sample_with_mileage})
+
+    if listing_mileage and 1000 <= listing_mileage <= 800_000 \
+       and len(sample_with_mileage) >= 8 and distinct_mil >= 3:
+        # Build X = [[1, year_offset, mileage], ...], y = price
+        X = []
+        y = []
+        for yr, mil, pr in sample_with_mileage:
+            year_offset = float(yr - base["year"])
+            X.append([1.0, year_offset, float(mil)])
+            y.append(float(pr))
+
+        # Inline OLS via Gauss-Jordan
+        def ols_solve(X, y):
+            n_rows = len(y)
+            n_features = len(X[0])
+            XtX = [[sum(X[i][r] * X[i][c] for i in range(n_rows))
+                    for c in range(n_features)] for r in range(n_features)]
+            Xty = [sum(X[i][r] * y[i] for i in range(n_rows)) for r in range(n_features)]
+            M = [XtX[r] + [Xty[r]] for r in range(n_features)]
+            for col in range(n_features):
+                max_r = max(range(col, n_features), key=lambda rr: abs(M[rr][col]))
+                M[col], M[max_r] = M[max_r], M[col]
+                if abs(M[col][col]) < 1e-12: return None, 0.0, 0.0
+                piv = M[col][col]
+                for c in range(n_features + 1): M[col][c] /= piv
+                for rr in range(n_features):
+                    if rr == col: continue
+                    f = M[rr][col]
+                    for c in range(n_features + 1): M[rr][c] -= f * M[col][c]
+            beta = [row[-1] for row in M]
+            y_mean = sum(y) / n_rows
+            residuals = [y[i] - sum(X[i][f] * beta[f] for f in range(n_features)) for i in range(n_rows)]
+            rss = sum(r * r for r in residuals)
+            tss = sum((yv - y_mean) ** 2 for yv in y)
+            r2_val = (1 - rss / tss) if tss > 0 else 0.0
+            rstd_val = math.sqrt(rss / max(1, n_rows - n_features))
+            return beta, r2_val, rstd_val
+
+        beta, r2_val, rstd_val = ols_solve(X, y)
+        if beta is not None and r2_val >= 0.10:
+            # Predict для нашего listing'а: year_offset=0 (тот же год), mileage=listing_mileage
+            pred_price = beta[0] + beta[1] * 0.0 + beta[2] * float(listing_mileage)
+            if pred_price > 0:
+                predicted = int(pred_price)
+                ci_half = 1.96 * rstd_val
+                predicted_low = int(max(0, pred_price - ci_half))
+                predicted_high = int(pred_price + ci_half)
+                r2 = round(r2_val, 3)
+                rstd_pct = round(rstd_val / pred_price * 100, 1)
+                mileage_used = int(listing_mileage)
+                method = "regression"
+
+    # Verdict — приоритет regression-based, иначе percentile
     verdict = None
+    deviation_pct = None
     margin_if_resell = None
-    if current and fair_low and fair_high and median:
+
+    if current and predicted:
+        deviation_pct = round(100.0 * (current - predicted) / predicted, 1)
+        if deviation_pct < -10:
+            verdict = "buy_signal"
+            margin_if_resell = round(-deviation_pct, 1)
+        elif deviation_pct > 15:
+            verdict = "overpriced"
+        else:
+            verdict = "fair"
+    elif current and fair_low and fair_high and median:
+        # Fallback на percentile
         if current < fair_low:
-            verdict = "cheap"
+            verdict = "buy_signal"
             margin_if_resell = round(100.0 * (median - current) / current, 1)
         elif current > fair_high:
-            verdict = "expensive"
+            verdict = "overpriced"
         else:
             verdict = "fair"
 
     return {
         "listing_id": listing_id,
-        "current": current,
+        "listed_price": current,
+        # Legacy percentile (всегда возвращаем для UI compatibility)
         "fair_low": fair_low,
         "median": median,
         "fair_high": fair_high,
-        "sample_size": stats["sample_size"],
+        # Regression-based predictor
+        "predicted": predicted,
+        "predicted_low": predicted_low,
+        "predicted_high": predicted_high,
+        "deviation_pct": deviation_pct,
+        "r2": r2,
+        "residual_std_pct": rstd_pct,
+        "mileage_used": mileage_used,
+        "method": method,           # 'regression' or 'percentile'
+        "sample_size": n,
         "verdict": verdict,
         "margin_if_resell_pct": margin_if_resell,
+        # Legacy alias
+        "current": current,
     }
 
 

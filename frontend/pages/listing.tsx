@@ -44,12 +44,23 @@ interface ListingDetail {
 
 interface Valuation {
     listing_id: string;
-    current: number | null;
+    listed_price: number | null;
+    current: number | null;       // legacy alias = listed_price
+    // Legacy percentile (always returned for fallback)
     fair_low: number | null;
     median: number | null;
     fair_high: number | null;
+    // Regression-based (V2 — when mileage data is sufficient)
+    predicted: number | null;
+    predicted_low: number | null;
+    predicted_high: number | null;
+    deviation_pct: number | null;
+    r2: number | null;
+    residual_std_pct: number | null;
+    mileage_used: number | null;
+    method: 'regression' | 'percentile';
     sample_size: number;
-    verdict: 'cheap' | 'fair' | 'expensive' | null;
+    verdict: 'buy_signal' | 'cheap' | 'fair' | 'overpriced' | 'expensive' | null;
     margin_if_resell_pct: number | null;
 }
 
@@ -236,8 +247,11 @@ export default function ListingPage() {
     // Sentence for the callout
     let verdictClass: 'up' | 'down' | 'accent' = 'accent';
     let verdictLabel = 'Честная цена';
-    if (valuation?.verdict === 'cheap') { verdictClass = 'up'; verdictLabel = 'Дёшево'; }
-    else if (valuation?.verdict === 'expensive') { verdictClass = 'down'; verdictLabel = 'Дорого'; }
+    if (valuation?.verdict === 'buy_signal' || valuation?.verdict === 'cheap') {
+        verdictClass = 'up'; verdictLabel = 'Сигнал покупки';
+    } else if (valuation?.verdict === 'overpriced' || valuation?.verdict === 'expensive') {
+        verdictClass = 'down'; verdictLabel = 'Завышенная цена';
+    }
 
     let deltaPctVsMedian: number | null = null;
     if (currentPrice != null && valuation?.median != null && valuation.median > 0) {
@@ -554,6 +568,75 @@ export default function ListingPage() {
                                                 </div>
                                             </div>
 
+                                            {/* Regression-based predictor block (only when method=regression) */}
+                                            {valuation?.method === 'regression' && valuation.predicted != null && (
+                                                <div
+                                                    style={{
+                                                        marginTop: 14,
+                                                        padding: 12,
+                                                        background: 'var(--surface-2)',
+                                                        border: '1px solid var(--border)',
+                                                        borderRadius: 6,
+                                                        display: 'grid',
+                                                        gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+                                                        gap: 12,
+                                                    }}
+                                                >
+                                                    <div>
+                                                        <div className="uppercase" style={{ fontSize: 10, color: 'var(--text-muted)', letterSpacing: '0.05em' }}>
+                                                            Прогноз ML
+                                                        </div>
+                                                        <div className="mono tnum" style={{ fontSize: 15, marginTop: 2 }}>
+                                                            {fmt.price(valuation.predicted)}
+                                                            {valuation.predicted_low != null && valuation.predicted_high != null && (
+                                                                <span style={{ color: 'var(--text-muted)', fontSize: 11, marginLeft: 4 }}>
+                                                                    ±{fmt.price((valuation.predicted_high - valuation.predicted_low) / 2)}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                        <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>
+                                                            regression на mileage + год
+                                                        </div>
+                                                    </div>
+                                                    <div>
+                                                        <div className="uppercase" style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                                                            Отклонение
+                                                        </div>
+                                                        <div
+                                                            className="mono tnum"
+                                                            style={{
+                                                                fontSize: 15, marginTop: 2,
+                                                                color: valuation.deviation_pct == null
+                                                                    ? 'var(--text)'
+                                                                    : valuation.deviation_pct < -10 ? 'var(--up)'
+                                                                    : valuation.deviation_pct > 15 ? 'var(--down)' : 'var(--text)',
+                                                            }}
+                                                        >
+                                                            {valuation.deviation_pct != null
+                                                                ? `${valuation.deviation_pct > 0 ? '+' : ''}${valuation.deviation_pct.toFixed(1)}%`
+                                                                : '—'}
+                                                        </div>
+                                                        <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>
+                                                            от прогнозной цены
+                                                        </div>
+                                                    </div>
+                                                    <div>
+                                                        <div className="uppercase" style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                                                            R² модели
+                                                        </div>
+                                                        <div className="mono tnum" style={{ fontSize: 15, marginTop: 2 }}>
+                                                            {valuation.r2?.toFixed(2) ?? '—'}
+                                                        </div>
+                                                        <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>
+                                                            {valuation.r2 == null ? '—' :
+                                                             valuation.r2 > 0.5 ? 'надёжная оценка' :
+                                                             valuation.r2 > 0.2 ? 'умеренная' : 'шумная'}
+                                                            {' · n='}{valuation.sample_size}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            )}
+
                                             {/* Callout */}
                                             <div
                                                 className="listing-callout"
@@ -574,6 +657,11 @@ export default function ListingPage() {
                                                     }}
                                                 >
                                                     Вывод модели · {verdictLabel}
+                                                    {valuation?.method === 'regression' && (
+                                                        <span style={{ color: 'var(--text-muted)', fontWeight: 400, marginLeft: 6 }}>
+                                                            (regression)
+                                                        </span>
+                                                    )}
                                                 </div>
                                                 <div style={{ fontSize: 13, lineHeight: 1.5 }}>
                                                     {calloutText}
