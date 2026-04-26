@@ -62,6 +62,25 @@ UPDATE listings l SET model_id = NULL FROM models m
 
 ---
 
+## 2026-04-26 — Profitability: brand/model/city filters + sortable columns
+
+### Why
+Юзер увидел /profitability с топ списком в формате "Bmw 525 1994 → Mercedes E230 1992 → Toyota Alphard 2006…" но **не мог сузить выборку под себя** (только year-range / minVol / limit). А для дешёвой Camry или конкретно Алматы — нужна была фильтрация.
+
+### Added (Backend `/profit-ranking`)
+- Новые query-params: `brand_id`, `model_id`, `city` (slug). Проброшены в SQL через тот же `year_filter` инлайн-блок.
+
+### Added (Frontend `/profitability`)
+- **3 новых селектора в шапке таблицы**: Марка, Модель (зависит от Марки), Город. SWR подхватывает `getBrands` / `getModels` / `getCities`.
+- **Кликабельные column headers** — sort by margin_pct / volume / median_days / year / buy_price / sell_price.
+- **Client-side sort** через `useMemo` — данные уже в памяти (limit ≤ 100), сортируется мгновенно. Toggle desc → asc → desc по второму клику. Иконка `▼` / `▲` рядом с активной колонкой.
+- Default sort: margin_pct DESC (как раньше).
+
+### Не сделано (отложено)
+- URL-state sync (filters не сохраняются в URL) — для shareable links нужно zustand-style sync. Сейчас filters per-tab.
+
+---
+
 ## 2026-04-26 — USD/KZT ticker: реальные deltas из fx_history
 
 ### Why

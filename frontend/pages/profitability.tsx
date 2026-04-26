@@ -1,5 +1,5 @@
 // pages/profitability.tsx — рейтинг моделей по потенциалу маржи перепродажи
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import Head from 'next/head';
 import useSWR from 'swr';
 
@@ -21,6 +21,13 @@ interface ProfitRow {
     risk: 'low' | 'medium' | 'high';
 }
 
+interface BrandItem { id: number; name: string; slug: string; listings_count: number }
+interface ModelItem { id: number; name: string; slug: string; listings_count: number }
+interface CityItem { name: string; listings_count: number }
+
+type SortField = 'margin_pct' | 'volume' | 'median_days_to_sell' | 'year' | 'buy_price' | 'sell_price';
+type SortDir = 'asc' | 'desc';
+
 const MIN_VOLUME_OPTIONS = [10, 20, 40, 80];
 const LIMIT_OPTIONS = [20, 50, 100];
 const CURRENT_YEAR = new Date().getFullYear();
@@ -37,21 +44,68 @@ export default function ProfitabilityPage() {
     const [limit, setLimit] = useState(50);
     const [yearFrom, setYearFrom] = useState<number | null>(null);
     const [yearTo, setYearTo] = useState<number | null>(null);
-    // Default false → не показываем аварийные / не на ходу / не растаможенные.
-    // Пользователь может выбрать "Все" если хочет видеть raw-распределение.
+    const [brandId, setBrandId] = useState<number | null>(null);
+    const [modelId, setModelId] = useState<number | null>(null);
+    const [city, setCity] = useState<string | null>(null);
     const [includeJunk, setIncludeJunk] = useState(false);
+    // Client-side sort
+    const [sortBy, setSortBy] = useState<SortField>('margin_pct');
+    const [sortDir, setSortDir] = useState<SortDir>('desc');
+
+    // Brands / models / cities for selectors
+    const { data: brands } = useSWR<BrandItem[]>(
+        'brands-profit',
+        () => analyticsApi.getBrands(),
+        { revalidateOnFocus: false }
+    );
+    const { data: models } = useSWR<ModelItem[]>(
+        brandId ? ['models-profit', brandId] : null,
+        () => analyticsApi.getModels(brandId!),
+        { revalidateOnFocus: false }
+    );
+    const { data: cities } = useSWR<CityItem[]>(
+        'cities-profit',
+        () => analyticsApi.getCities(),
+        { revalidateOnFocus: false }
+    );
 
     const { data, isLoading } = useSWR<ProfitRow[]>(
-        ['profit-ranking', minVol, limit, yearFrom, yearTo, includeJunk],
+        ['profit-ranking', minVol, limit, yearFrom, yearTo, brandId, modelId, city, includeJunk],
         () => analyticsApi.getProfitRanking({
             min_volume: minVol,
             limit,
             ...(yearFrom && { year_from: yearFrom }),
             ...(yearTo   && { year_to:   yearTo   }),
+            ...(brandId  && { brand_id:  brandId  }),
+            ...(modelId  && { model_id:  modelId  }),
+            ...(city     && { city }),
             ...(includeJunk ? { include_junk: true } : {}),
         }),
         { keepPreviousData: true }
     );
+
+    // Client-side sort
+    const sortedData = useMemo(() => {
+        if (!data) return [];
+        const copy = [...data];
+        copy.sort((a, b) => {
+            const av = (a[sortBy] ?? -Infinity) as number;
+            const bv = (b[sortBy] ?? -Infinity) as number;
+            return sortDir === 'desc' ? bv - av : av - bv;
+        });
+        return copy;
+    }, [data, sortBy, sortDir]);
+
+    function toggleSort(field: SortField) {
+        if (field === sortBy) {
+            setSortDir(d => d === 'desc' ? 'asc' : 'desc');
+        } else {
+            setSortBy(field);
+            setSortDir('desc');
+        }
+    }
+    const sortIcon = (field: SortField) =>
+        field === sortBy ? (sortDir === 'desc' ? ' ▼' : ' ▲') : '';
 
     return (
         <>
@@ -114,6 +168,58 @@ export default function ProfitabilityPage() {
                         </div>
 
                         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                            {/* Brand */}
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: 'var(--text-muted)' }}>
+                                <span className="uppercase">марка</span>
+                                <select
+                                    value={brandId ?? ''}
+                                    onChange={e => {
+                                        setBrandId(e.target.value ? Number(e.target.value) : null);
+                                        setModelId(null);
+                                    }}
+                                    style={{ fontSize: 13, padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text)', cursor: 'pointer', minWidth: 130 }}
+                                >
+                                    <option value="">все</option>
+                                    {brands?.map(b => (
+                                        <option key={b.id} value={b.id}>
+                                            {b.name} ({fmt.int(b.listings_count)})
+                                        </option>
+                                    ))}
+                                </select>
+                            </label>
+                            {/* Model */}
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: 'var(--text-muted)' }}>
+                                <span className="uppercase">модель</span>
+                                <select
+                                    value={modelId ?? ''}
+                                    onChange={e => setModelId(e.target.value ? Number(e.target.value) : null)}
+                                    disabled={!brandId}
+                                    style={{ fontSize: 13, padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text)', cursor: 'pointer', minWidth: 130 }}
+                                >
+                                    <option value="">все</option>
+                                    {models?.map(m => (
+                                        <option key={m.id} value={m.id}>
+                                            {m.name} ({fmt.int(m.listings_count)})
+                                        </option>
+                                    ))}
+                                </select>
+                            </label>
+                            {/* City */}
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: 'var(--text-muted)' }}>
+                                <span className="uppercase">город</span>
+                                <select
+                                    value={city ?? ''}
+                                    onChange={e => setCity(e.target.value || null)}
+                                    style={{ fontSize: 13, padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text)', cursor: 'pointer', minWidth: 130 }}
+                                >
+                                    <option value="">все</option>
+                                    {cities?.slice(0, 25).map(c => (
+                                        <option key={c.name} value={c.name}>
+                                            {c.name} ({fmt.int(c.listings_count)})
+                                        </option>
+                                    ))}
+                                </select>
+                            </label>
                             {/* Год от */}
                             <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: 'var(--text-muted)' }}>
                                 <span className="uppercase">год от</span>
@@ -197,17 +303,54 @@ export default function ProfitabilityPage() {
                                         <tr>
                                             <th style={{ width: 44 }}>#</th>
                                             <th>Модель</th>
-                                            <th className="right">Год</th>
-                                            <th className="right">Покупка (p25)</th>
-                                            <th className="right">Продажа (медиана)</th>
-                                            <th className="right">Маржа</th>
-                                            <th className="right">Дней</th>
-                                            <th className="right">Объём</th>
+                                            <th
+                                                className="right"
+                                                style={{ cursor: 'pointer', userSelect: 'none' }}
+                                                onClick={() => toggleSort('year')}
+                                                title="Сортировка по году"
+                                            >
+                                                Год{sortIcon('year')}
+                                            </th>
+                                            <th
+                                                className="right"
+                                                style={{ cursor: 'pointer', userSelect: 'none' }}
+                                                onClick={() => toggleSort('buy_price')}
+                                            >
+                                                Покупка (p25){sortIcon('buy_price')}
+                                            </th>
+                                            <th
+                                                className="right"
+                                                style={{ cursor: 'pointer', userSelect: 'none' }}
+                                                onClick={() => toggleSort('sell_price')}
+                                            >
+                                                Продажа (медиана){sortIcon('sell_price')}
+                                            </th>
+                                            <th
+                                                className="right"
+                                                style={{ cursor: 'pointer', userSelect: 'none' }}
+                                                onClick={() => toggleSort('margin_pct')}
+                                            >
+                                                Маржа{sortIcon('margin_pct')}
+                                            </th>
+                                            <th
+                                                className="right"
+                                                style={{ cursor: 'pointer', userSelect: 'none' }}
+                                                onClick={() => toggleSort('median_days_to_sell')}
+                                            >
+                                                Дней{sortIcon('median_days_to_sell')}
+                                            </th>
+                                            <th
+                                                className="right"
+                                                style={{ cursor: 'pointer', userSelect: 'none' }}
+                                                onClick={() => toggleSort('volume')}
+                                            >
+                                                Объём{sortIcon('volume')}
+                                            </th>
                                             <th className="right">Риск</th>
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {data.map((r, i) => (
+                                        {sortedData.map((r, i) => (
                                             <tr key={`${r.brand}|${r.model}|${r.year}`}>
                                                 <td>
                                                     <span className="rank">{i + 1}</span>

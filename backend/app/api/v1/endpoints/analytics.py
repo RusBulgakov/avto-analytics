@@ -1150,6 +1150,9 @@ async def get_profit_ranking(
     min_volume: int = Query(10, ge=3, le=200, description="Мин. число активных объявлений"),
     year_from: int = Query(None, ge=1990, le=2030, description="Год выпуска от"),
     year_to: int = Query(None, ge=1990, le=2030, description="Год выпуска до"),
+    brand_id: Optional[int] = Query(None, description="Фильтр по марке"),
+    model_id: Optional[int] = Query(None, description="Фильтр по модели"),
+    city: Optional[str] = Query(None, description="Фильтр по городу (slug)"),
     include_junk: bool = Query(
         False,
         description=(
@@ -1173,7 +1176,7 @@ async def get_profit_ranking(
 
     Данные берутся из price_history (последнее значение за 7 дней).
     """
-    # Динамически добавляем условие по году если задан диапазон
+    # Динамические условия. params order: [min_volume, limit, ...optional]
     year_filter = ""
     params: list = [min_volume, limit]
     if year_from:
@@ -1182,6 +1185,15 @@ async def get_profit_ranking(
     if year_to:
         params.append(year_to)
         year_filter += f" AND l.year <= ${len(params)}"
+    if brand_id:
+        params.append(brand_id)
+        year_filter += f" AND l.brand_id = ${len(params)}"
+    if model_id:
+        params.append(model_id)
+        year_filter += f" AND l.model_id = ${len(params)}"
+    if city:
+        params.append(city)
+        year_filter += f" AND l.city = ${len(params)}"
 
     # Junk-фильтр (3 слоя):
     #   1. Real DB flags (kolesa: parsers/kolesa/flags.py заполняет is_emergency
