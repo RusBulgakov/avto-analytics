@@ -4,6 +4,64 @@
 
 ---
 
+## 2026-04-26 — Kolesa parser: безотказность + охват + Telegram прогресс-бар (1b3e30a)
+
+### Added
+- **Шардированный workflow `.github/workflows/kolesa_full.yml`** — kolesa.kz вынесен из `daily_parsers.yml` в отдельный workflow, потому что полный прогон 191 фида не влезает в 360-мин GHA timeout. Решение: matrix из 2 параллельных шардов × ~96 фидов × 350-мин timeout. Cron: дважды в сутки (`0 8` + `0 20` UTC).
+- **`http_client.py::IPBlockedError`** — кастомный exception для 403/451. Парсер прерывается мгновенно вместо 4×35 = 140 секунд retry на каждой заблокированной странице.
+- **`parser.py::_get_feeds_for_shard`** — round-robin разбивка `ALL_FEEDS` через env vars `KOLESA_SHARD_INDEX`/`KOLESA_SHARD_COUNT`. Каждый шард получает равномерный микс городов/брендов/моделей.
+- **`parser.py::_validate_model`** — отсекает синтетические модели (`model == brand`, `model == 4-значный год 1990–2030`). Listing сохраняется с `model_id=NULL` через LEFT JOIN, данные не теряются. Реальные модели-числа (Audi 80/100, BMW 525/528, Mazda 626, Porsche 911, Lada 2107/2114) **не отсекаются** — они валидные.
+- **Telegram прогресс-бар** в `parser.py::_render_progress_bar` + фоновая `_progress_updater` task. Каждый шард шлёт сообщение в начале и редактирует его каждые 60 сек через `editMessageText` API. Показывает: страниц, фидов, активные фиды, сохранено/новых, прошло/ETA.
+- **`notifier.py`**: `send_telegram_message_with_id` (возвращает `message_id`), `edit_telegram_message` (с обработкой "message is not modified").
+- **Smoke-check + structured exit codes** в `parser.py::__main__`:
+  - `0` = success (`>MIN_SAVED_THRESHOLD=1000`)
+  - `1` = IP блок / catastrophic (`<MIN_PARTIAL_THRESHOLD=100`)
+  - `2` = непойманное исключение / DB error
+  - `10` = partial success (100–1000) — deactivate отменён
+- **SIGTERM handler** в `parser.py` — graceful shutdown при GHA-timeout.
+- **`daewoo`** добавлен в `BRAND_FEEDS` (~690 active listings раньше попадали только через model-feeds `daewoo/nexia`, `daewoo/matiz`).
+- **Auto-trigger `alive_check`** после успешного `kolesa_full`: новый job в `kolesa_full.yml` запускает `gh workflow run "Alive Check (Kolesa)"` если шарды отработали успешно.
+
+### Changed
+- **Per-error retry strategy** в `http_client.py::fetch`:
+  - `403`/`451` → `IPBlockedError` мгновенно (без retry)
+  - `429` → backoff `60×1.5^retry` сек, до 3 попыток
+  - `5xx` → exp backoff 3–12 сек, до 3 попыток
+  - network/timeout → exp backoff 3–12 сек, до 3 попыток
+- **`parse_city`**: `consecutive_errors` сбрасывается **только при успешной загрузке HTML** (раньше сбрасывался на любом исходе включая пустой ответ — это маскировало IP-блок). `IPBlockedError` пробрасывается наверх как сигнал блока, не считается сетевой ошибкой.
+- **`run_parser` batch-level health check**:
+  - ≥50% батча упало → пауза 60–120 с перед следующим
+  - 100% упало → пауза 2–3 мин + попытка восстановиться
+  - 2 подряд full-fail → IP блок подтверждён, return `ip_blocked=True`
+- **`run_parser` сигнатура**: возвращает `(saved, new, ip_blocked)` вместо `(saved, new)` — `__main__` решает exit code.
+- **City normalization** в `_parse_item`: `'0'` → `None`, `'semei'` → `'semey'` (через alias map).
+- **`alive_check.yml` cron**: `30 */6 * * *` (каждые 6h) вместо `30 */12 * * *` — ложно-деактивированные исчезают за полдня вместо суток.
+- **`daily_parsers.yml`**: убран kolesa из matrix (теперь только mycar/newauto/avtorynok/olx). `concurrency` group + `if: success()` для `deactivate-old`.
+
+### Fixed
+- **Локальный кейс `KeyError: 'POSTGRES_HOST'`** при запуске парсера вне GHA: `load_dotenv()` теперь вызывается в `parser.py::__main__` (раньше только в `migrator.py`).
+- **`asyncio.wait_for(timeout=35)` поверх `curl_cffi.session.get(timeout=30)`** — curl_cffi иногда висел вечно на зависших TCP, libcurl-таймаут не срабатывал.
+- **`continue` вместо `break`** на сетевой ошибке в `parse_city` + счётчик 5 ошибок подряд для защиты от бесконечного висения при мёртвом интернете.
+- **9 listings с `model = brand`** + **5 с `model = год`** + **3868 с `city = '0'`** + **5 с `city = 'semei'`** — миграция БД выполнена ad-hoc.
+
+### Impact
+- Парсер больше **не зависает на 7+ часов** на одном HTTP-запросе и не крутится 4 часа впустую при IP-блоке.
+- При неудачном прогоне `deactivate-old` **не запускается** → перестаём терять живые объявления (вчера потеряли 11,864 за один день).
+- 2× прогона в сутки + alive_check каждые 6h → доля свежих (`<24h`) listings должна вырасти с 5.6% до целевых 80%+.
+- Telegram-наблюдаемость: видно прогресс шардов в реальном времени, легко поймать аномалию ещё в процессе.
+
+### Migration ops (ad-hoc, не в репо)
+```sql
+UPDATE listings SET city = NULL  WHERE city = '0';     -- 3868
+UPDATE listings SET city = 'semey' WHERE city = 'semei'; -- 5
+UPDATE listings l SET model_id = NULL FROM brands b, models m
+  WHERE l.brand_id=b.id AND l.model_id=m.id AND LOWER(m.name)=LOWER(b.name); -- 9
+UPDATE listings l SET model_id = NULL FROM models m
+  WHERE l.model_id=m.id AND m.name ~ '^(199[0-9]|20[0-2][0-9]|2030)$'; -- 5
+```
+
+---
+
 ## 2026-04-26 — Multi-word model names ("Land Cruiser Prado", не просто "Land")
 
 ### Fixed

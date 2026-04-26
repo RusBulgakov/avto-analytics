@@ -18,21 +18,26 @@
 ## 🏗️ Архитектура
 
 ```
-┌────────────────────────────────────────────────────────────────┐
-│   GitHub Actions — 2 независимых workflow                      │
-│                                                                │
-│  daily_parsers.yml  — каждые 6 часов                           │
-│  refresh_proxy → ┌─ parse_kolesa  (191 фид: 15 городов         │
-│                  │   + 80 брендов + 97 моделей, batch=3)       │
-│                  ├─ parse_mycar   (REST API)                   │
-│                  ├─ parse_newauto (241 модель)                 │
-│                  ├─ parse_avtorynok                            │
-│                  └─ parse_olx                                  │
-│                       └→ deactivate_old_listings (>168h)       │
-│                                                                │
-│  alive_check.yml    — каждые 12 часов                          │
-│  reviver (5000/run) GET'ит inactive → 200 ⇒ is_active=TRUE     │
-└──────────────────────────────┬─────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│   GitHub Actions — 3 независимых workflow                        │
+│                                                                  │
+│  kolesa_full.yml      — 2× в сутки (08:00 + 20:00 UTC)           │
+│  matrix [shard 0, shard 1]   ─ ~96 фидов на шард, 350-мин timeout│
+│    │   IPBlockedError → instant exit 1, не ждём 4ч впустую       │
+│    │   exit 0  ────► deactivate_old_listings (>168h)             │
+│    │   exit 1  ────► deactivate отменён (сохраняем данные)       │
+│    └─► auto-trigger → alive_check                                │
+│                                                                  │
+│  daily_parsers.yml    — каждые 6 часов (только лёгкие парсеры)   │
+│  refresh_proxy → ┌─ parse_mycar     (REST API)                   │
+│                  ├─ parse_newauto   (241 модель)                 │
+│                  ├─ parse_avtorynok                              │
+│                  └─ parse_olx                                    │
+│                       └→ deactivate_old_listings (>168h)         │
+│                                                                  │
+│  alive_check.yml      — каждые 6 часов                           │
+│  reviver (5000/run) GET'ит inactive → 200 ⇒ is_active=TRUE       │
+└──────────────────────────────┬───────────────────────────────────┘
                                │ asyncpg + SSL + statement_cache=0
                     ┌──────────▼──────────┐
                     │   Neon PostgreSQL   │  listings, price_history,
@@ -51,7 +56,7 @@
 | Компонент | Технологии |
 |-----------|-----------|
 | **Парсеры** | Python 3.11, curl_cffi (Chrome impersonation), asyncio, asyncpg |
-| **Планировщик** | GitHub Actions: `daily_parsers` (cron `0 */6 * * *`) + `alive_check` (cron `30 */12 * * *`) |
+| **Планировщик** | GitHub Actions: `kolesa_full` (cron `0 8,20 * * *`, 2 шарда) + `daily_parsers` (cron `0 */6 * * *`) + `alive_check` (cron `30 */6 * * *`) |
 | **База данных** | Neon PostgreSQL (serverless, free tier, Pooler через PgBouncer) |
 | **Backend** | FastAPI, asyncpg, Uvicorn — на Render (Web Service) |
 | **Frontend** | Next.js 14 (static export), TypeScript, SWR, Recharts, Leaflet, zustand — на Render (Static Site) |
@@ -64,7 +69,7 @@
 
 | Площадка | Метод | Фидов | Время парсинга |
 |----------|-------|:-----:|----------------|
-| [Kolesa.kz](https://kolesa.kz) | Embedded JSON из HTML (15 городов + 80 брендов + 97 моделей, батчи по 3) | **191** | ~2-3 ч |
+| [Kolesa.kz](https://kolesa.kz) | Embedded JSON из HTML (15 городов + 81 бренд + 97 моделей, батчи по 3, **2 шарда параллельно**) | **193** | ~4-5 ч (per shard) |
 | [mycar.kz](https://mycar.kz) | REST JSON API | 1 | ~37 мин |
 | [newauto.kz](https://newauto.kz) | HTML парсинг, slug-ID `/cars/{brand}/{model}` | 241 | ~1 мин |
 | [avtorynok.kz](https://avtorynok.kz) | HTML парсинг (стоп по повтору ID) | 1 | ~1 мин |
@@ -72,7 +77,11 @@
 
 **Model-level фиды у kolesa:** kolesa.kz глушит пагинацию на 250 страниц × 20 = 5000 объявлений на фид. Поэтому для тяжёлых марок (Toyota, Lada, Hyundai, …) добавлены отдельные под-фиды вида `toyota/camry`, `vaz/2107`, `mercedes-benz/e-class`. Список в `parsers/kolesa/parser.py::MODEL_FEEDS`.
 
-**Alive-check worker:** раз в 12 часов запускается отдельный workflow `alive_check.yml`. Берёт 5000 inactive объявлений kolesa (3–30 дней свежести), GET'ит их URL, и если сайт отдаёт 200 — возвращает в `is_active=TRUE`. Решает проблему false-negative deactivations для объявлений с глубоких страниц, куда основной парсер не добирается. См. `parsers/kolesa/alive_check.py`.
+**Alive-check worker:** **каждые 6 часов** запускается отдельный workflow `alive_check.yml`. Берёт 5000 inactive объявлений kolesa (3–30 дней свежести), GET'ит их URL, и если сайт отдаёт 200 — возвращает в `is_active=TRUE`. Решает проблему false-negative deactivations для объявлений с глубоких страниц, куда основной парсер не добирается. См. `parsers/kolesa/alive_check.py`. Также автоматически триггерится после успешного `kolesa_full` через `gh workflow run`.
+
+**Шардирование kolesa:** `kolesa_full.yml` использует matrix из 2 параллельных GHA jobs × ~96 фидов × ~4-5ч на шард. Полный прогон 191 фида в один job не влез бы в 360-мин лимит GHA. Round-robin распределение в `parser.py::_get_feeds_for_shard` даёт балансировку (микс городов/брендов/моделей).
+
+**Безотказность kolesa:** парсер использует **structured exit codes** (`0`=success, `1`=IP блок, `2`=DB error, `10`=partial). При IP-блоке (403/451) парсер прерывается **мгновенно** через `IPBlockedError` без 4× retry — это критично, потому что иначе шард тратил ~4 часа впустую. `deactivate-old` запускается **только** при exit 0 — иначе сохраняем существующие данные вместо слепой деактивации.
 
 ---
 
@@ -94,8 +103,14 @@
    | `TELEGRAM_BOT_TOKEN` | Токен бота (опционально) |
    | `TELEGRAM_CHAT_ID` | ID чата для уведомлений (опционально) |
 
-3. **Готово.** Парсеры запустятся автоматически каждые 6 часов (01/07/13/19 UTC). Ручной запуск:
-   - GitHub → Actions → **Daily Parsers** → Run workflow → выбрать источник (all / kolesa / mycar / …)
+3. **Готово.** Расписание:
+   - **Kolesa Full Parse (sharded):** 08:00 + 20:00 UTC (2× в сутки, ~4-5ч на шард)
+   - **Daily Parsers (light):** каждые 6 часов (00/06/12/18 UTC) — mycar/newauto/avtorynok/olx
+   - **Alive Check (Kolesa):** каждые 6 часов (00:30/06:30/12:30/18:30 UTC)
+
+   Ручной запуск:
+   - GitHub → Actions → **Kolesa Full Parse (sharded)** → Run workflow → можно указать `shard_count`
+   - GitHub → Actions → **Daily Parsers (light)** → Run workflow → выбрать источник (all / mycar / …)
    - GitHub → Actions → **Alive Check (Kolesa)** → Run workflow → оживить inactive
 
 ---
@@ -167,8 +182,9 @@ TELEGRAM_CHAT_ID=
 ```
 .
 ├── .github/workflows/
-│   ├── daily_parsers.yml          # Парсинг — каждые 6ч, 5 источников параллельно
-│   └── alive_check.yml            # Оживление inactive — каждые 12ч
+│   ├── kolesa_full.yml            # Kolesa.kz — 2× в сутки, 2 шарда параллельно
+│   ├── daily_parsers.yml          # Лёгкие парсеры — каждые 6ч (mycar/newauto/avtorynok/olx)
+│   └── alive_check.yml            # Оживление inactive — каждые 6ч + auto после kolesa
 ├── backend/
 │   └── app/
 │       ├── api/v1/endpoints/      # analytics.py (все /api/v1/analytics/*), auth.py
@@ -198,13 +214,13 @@ TELEGRAM_CHAT_ID=
 │   ├── requirements.txt           # Зависимости парсеров
 │   ├── common/
 │   │   ├── db.py                  # asyncpg пул, save_listing, deactivate_old_listings (168h)
-│   │   ├── http_client.py         # curl_cffi fetch с retry и ротацией прокси + UA
+│   │   ├── http_client.py         # curl_cffi fetch + IPBlockedError + per-error retry strategy
 │   │   ├── proxy_manager.py       # Загрузка и проверка прокси (семафор 200)
-│   │   ├── notifier.py            # Telegram уведомления об успехе/ошибке
+│   │   ├── notifier.py            # Telegram: send_*, send_*_with_id, edit_telegram_message
 │   │   ├── deactivate.py          # Entrypoint для deactivate_old_listings
 │   │   └── refresh_proxies.py     # Standalone обновление пула прокси
 │   ├── kolesa/
-│   │   ├── parser.py              # JSON-extraction, 191 фид (15 cities + 80 brands + 97 models)
+│   │   ├── parser.py              # JSON-extraction, 193 фида + sharding + Telegram progress
 │   │   └── alive_check.py         # Reviver для inactive listings — HEAD/GET → is_active=TRUE
 │   ├── mycar/parser.py            # REST API
 │   ├── newauto/parser.py
@@ -223,27 +239,49 @@ TELEGRAM_CHAT_ID=
 
 ## ⚡ GitHub Actions Workflows
 
-### `daily_parsers.yml` — основной парсинг
+### `kolesa_full.yml` — kolesa.kz (sharded, самый тяжёлый источник)
 
 ```
-Расписание: 0 */6 * * * (UTC)   → 4 раза в сутки (01 / 07 / 13 / 19 UTC)
-Ручной запуск: workflow_dispatch с выбором источника (all / kolesa / mycar / ...)
+Расписание: 0 8,20 * * * (UTC)   → 2 раза в сутки (08:00 + 20:00 UTC)
+Ручной запуск: workflow_dispatch с возможностью переопределить shard_count
+Concurrency group: kolesa-full (cancel-in-progress: false — ждём в очереди)
+
+Джобы:
+  1. kolesa-shard ×2     — matrix [shard_index: 0, 1]
+                           каждый шард парсит ~96 фидов из 193, timeout 350 мин
+                           ENV: KOLESA_SHARD_INDEX, KOLESA_SHARD_COUNT, MIN_SAVED_THRESHOLD
+                           Exit codes: 0=success / 1=IP блок / 2=DB error / 10=partial
+  2. deactivate-old      — ТОЛЬКО при exit 0 ВСЕХ шардов (if: success())
+                           is_active=FALSE для listings с last_seen > 168h
+  3. trigger-alive-check — auto-запуск alive_check после успешной деактивации
+  4. summary             — финальное сообщение в Telegram (✅ / ⚠️ / 🔴)
+```
+
+**Шардирование:** `_get_feeds_for_shard` round-robin распределяет 193 фида (15 городов + 81 бренд + 97 моделей) по индексу `i % shard_count`. Каждый шард — ~96 фидов × ~3 мин = 4-5 часов.
+
+**Telegram прогресс-бар:** каждый шард отправляет `kolesa[1/2]` / `kolesa[2/2]` сообщение в начале и редактирует его каждые 60 секунд через `editMessageText`. Показывает: текущие активные фиды, страниц обработано, фидов завершено, сохранено/новых, ETA.
+
+### `daily_parsers.yml` — лёгкие парсеры
+
+```
+Расписание: 0 */6 * * * (UTC)   → 4 раза в сутки (00 / 06 / 12 / 18 UTC)
+Ручной запуск: workflow_dispatch с выбором источника (all / mycar / newauto / ...)
 
 Джобы:
   1. refresh-proxies     — обновить пул прокси (~1 мин)
-  2. parse-{source} ×5   — параллельный запуск всех парсеров
-     timeout: 180 мин
-  3. deactivate-old      — is_active=FALSE для listings с last_seen > 168h (7 дней)
-                           override через DEACTIVATE_THRESHOLD_HOURS env
+  2. parse-{source} ×4   — параллельный запуск парсеров: mycar, newauto, avtorynok, olx
+                           timeout: 180 мин
+  3. deactivate-old      — if: success() — is_active=FALSE при last_seen > 168h
 ```
 
-**Kolesa** парсит 191 фид (15 городов + 80 брендов + 97 моделей) батчами по 3 параллельно — 2-3 часа.
+**Kolesa тут НЕТ** — вынесен в `kolesa_full.yml` потому что не влезает в 360-мин лимит GHA.
 
 ### `alive_check.yml` — оживление inactive (kolesa)
 
 ```
-Расписание: 30 */12 * * * (UTC) → 00:30 и 12:30 UTC (05:30 / 17:30 Астана)
+Расписание: 30 */6 * * * (UTC)  → 4 раза в сутки (00:30 / 06:30 / 12:30 / 18:30 UTC)
 timeout: 120 мин
+Также автоматически триггерится после успешного kolesa_full
 
 Один job:
   alive-check — берёт 5000 inactive listings с last_seen в диапазоне 3–30 дней
@@ -332,8 +370,11 @@ users / subscription_plans / user_subscriptions             — пользова
 ## 🐛 Известные особенности
 
 - **Kolesa 5000-лимит на фид:** kolesa.kz глушит пагинацию на 250 страниц × 20 = 5000 объявлений. Поэтому для тяжёлых брендов (Toyota, Lada, Hyundai) одного brand-feed недостаточно — добавлены **model-level feed'ы** в `MODEL_FEEDS`. Каждый под-фид имеет свой 5000-лимит. Toyota: покрытие 5k → ~75k (brand + 14 моделей).
-- **Deactivate threshold 168h:** объявления помечаются `is_active=FALSE` только если парсер не видел их ≥7 дней. Слишком маленькое значение (48h ранее) ложно-мертвило живые объявления, которые парсер просто не успел обойти.
-- **Alive-check worker:** `parsers/kolesa/alive_check.py` берёт inactive и проверяет их URL напрямую. Работает как компенсация для ситуаций когда объявление активно на сайте, но парсер до него не добрался. Rate-limit: ~2 req/s, kolesa не банит.
+- **Kolesa anti-bot из GHA:** kolesa.kz агрессивно блокирует burst запросов из Azure-датацентра. Эмпирически 4 шарда × 3 concurrent (12 одновременных) → IP блок за 10 минут, 4 шарда не работают. **2 шарда × 3 concurrent (6 одновременных) проходят без блока.** Не пытайтесь увеличить — потеряете весь прогон.
+- **Kolesa structured exit codes:** парсер возвращает `0`/`1`/`2`/`10` в зависимости от исхода. Workflow gate'ит `deactivate-old` через `if: success()` → при `IPBlockedError` или partial-успехе deactivate **не запускается**, сохраняем существующие данные. Без этого 1 неудачный прогон стирал 11k+ живых объявлений (произошло 2026-04-23).
+- **Kolesa model validator (`_validate_model`):** парсер отсекает синтетические модели где `model == brand` или `model == год выпуска`. **НЕ отсекает модели-числа** (Audi 80, BMW 525, Mazda 626, Porsche 911, Lada 2107) — это валидные имена. Listing с невалидной моделью сохраняется с `model_id=NULL`.
+- **Deactivate threshold 168h:** объявления помечаются `is_active=FALSE` только если парсер не видел их ≥7 дней. Override через `DEACTIVATE_THRESHOLD_HOURS` env. Слишком маленькое значение (48h ранее) ложно-мертвило живые объявления, которые парсер просто не успел обойти.
+- **Alive-check worker:** `parsers/kolesa/alive_check.py` берёт inactive и проверяет их URL напрямую. Работает как компенсация для ситуаций когда объявление активно на сайте, но парсер до него не добрался. Rate-limit: ~2 req/s, kolesa не банит. Запускается каждые 6h + автоматически после успешного `kolesa_full`.
 - **Kolesa атрибуты:** На страницах листинга kolesa.kz возвращает только `brand`, `model`, `avgPrice` в `attributes` — поля `mileage_km`, `engine_volume_cc`, `fuel_type` и т.д. будут `NULL`. Полные данные доступны только на странице конкретного объявления (парсинг детальных страниц не реализован).
 - **Neon Pooler + asyncpg:** Используется `statement_cache_size=0` — обязательно при работе через PgBouncer в transaction-pooling режиме, иначе `InvalidSQLStatementNameError`.
 - **Бесплатные прокси:** Включены для mycar/olx/avtorynok/newauto. Для kolesa отключены (`use_proxy=False`) — curl_cffi с Chrome impersonation проходит напрямую, прокси только добавляют задержки через retry-loop.
