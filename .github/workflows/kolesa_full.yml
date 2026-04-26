@@ -15,7 +15,11 @@ name: Kolesa Full Parse (sharded)
 
 on:
   schedule:
-    - cron: '0 20 * * *'   # 20:00 UTC = 01:00 Астана (ночь, минимум нагрузки)
+    # Два прогона в сутки — повышает свежесть данных вдвое
+    # 20:00 UTC = 01:00 Астана (ночь)
+    # 08:00 UTC = 13:00 Астана (день)
+    - cron: '0 20 * * *'
+    - cron: '0 8 * * *'
   workflow_dispatch:
     inputs:
       shard_count:
@@ -109,7 +113,26 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
   # ─────────────────────────────────────────
-  # Шаг 3: Итоговое уведомление в Telegram
+  # Шаг 3: Auto-trigger alive_check после deactivate
+  # ─────────────────────────────────────────
+  # Сразу после deactivate запускаем alive_check, который оживит
+  # ложно-деактивированные (которые kolesa всё ещё показывает).
+  # Это закрывает gap между парсером (видит фид) и алайв-чеком (видит URL).
+  trigger-alive-check:
+    name: 🫀 Trigger alive_check
+    needs: [kolesa-shard, deactivate-old]
+    runs-on: ubuntu-latest
+    if: always() && needs.kolesa-shard.result == 'success'
+    steps:
+      - name: Dispatch alive_check workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run "Alive Check (Kolesa)" --ref ${{ github.ref_name }} \
+            -f batch=10000 || echo "Не удалось запустить alive_check (не критично)"
+
+  # ─────────────────────────────────────────
+  # Шаг 4: Итоговое уведомление в Telegram
   # ─────────────────────────────────────────
   summary:
     name: 📊 Send summary to Telegram

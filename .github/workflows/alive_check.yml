@@ -7,7 +7,7 @@ name: Alive Check (Kolesa)
 
 on:
   schedule:
-    - cron: '30 */12 * * *'  # 00:30 и 12:30 UTC (05:30 и 17:30 Астана)
+    - cron: '30 */6 * * *'  # каждые 6 часов: 00:30 / 06:30 / 12:30 / 18:30 UTC
   workflow_dispatch:
     inputs:
       batch:

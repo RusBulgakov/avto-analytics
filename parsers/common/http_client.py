@@ -1,7 +1,12 @@
 """
 common/http_client.py
-Отказоустойчивый HTTP-клиент с ротацией User-Agent и Proxy,
-экспоненциальными задержками при Retry.
+Отказоустойчивый HTTP-клиент с ротацией User-Agent и Proxy.
+
+Стратегия retry зависит от типа ошибки:
+  - 403 Forbidden          → IP заблокирован, IPBlockedError (instant fail, no retry)
+  - 429 Too Many Requests  → длинный backoff (60–120 с), 3 попытки
+  - 5xx                    → стандартный exp backoff (3-12 с), 3 попытки
+  - Network/timeout        → exp backoff (3-12 с), 3 попытки
 """
 import asyncio
 import logging
@@ -22,10 +27,26 @@ USER_AGENTS = [
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Mobile/15E148 Safari/604.1",
 ]
 
-RETRYABLE_STATUSES = {403, 429, 500, 502, 503, 504}
+# Statuses that trigger a retry. 403 убран — он маркер IP-блока, см. IPBlockedError ниже.
+RETRYABLE_5XX = {500, 502, 503, 504}
+RATE_LIMIT_STATUSES = {429}
+BLOCKED_STATUSES = {403, 451}  # 403 Forbidden, 451 Unavailable For Legal Reasons
+
 MAX_RETRIES = 3
-INITIAL_BACKOFF = 3.0  # секунды
+INITIAL_BACKOFF = 3.0           # секунды для 5xx/timeout
 JITTER_RANGE = 2.0
+RATE_LIMIT_BACKOFF_BASE = 60.0  # для 429: минимум 60 с между попытками
+
+
+class IPBlockedError(Exception):
+    """
+    Raised когда ответ говорит что IP в блоке (403/451).
+    Парсер должен немедленно прекратить работу — retry бесполезен.
+    """
+    def __init__(self, url: str, status: int):
+        super().__init__(f"IP blocked at {url} (HTTP {status})")
+        self.url = url
+        self.status = status
 
 
 def _headers() -> dict[str, str]:
@@ -47,9 +68,14 @@ async def fetch(
     session: Optional[requests.AsyncSession] = None,
 ) -> Any:
     """
-    Делает GET-запрос с ротацией прокси и User-Agent через curl_cffi (impersonate Chrome).
+    GET с ротацией прокси и User-Agent через curl_cffi (impersonate Chrome).
     При ошибке повторяет с экспоненциальной задержкой.
-    Возвращает str (HTML) или dict (JSON).
+
+    Returns:
+        str (HTML) или dict (JSON).
+    Raises:
+        IPBlockedError — на 403/451 (instant, без retry).
+        Exception      — после исчерпания попыток на других ошибках.
     """
     close_session = session is None
     if close_session:
@@ -62,17 +88,13 @@ async def fetch(
     try:
         while retries <= MAX_RETRIES:
             headers = _headers()
-            backoff = INITIAL_BACKOFF * (2 ** retries) + random.uniform(0, JITTER_RANGE)
 
             try:
-                # curl_cffi proxy format is typically {"http": proxy, "https": proxy} or a string, let's use string
-                # or just pass proxy string if it works. requests accepts strings.
                 proxies = {"http": proxy, "https": proxy} if proxy else None
 
                 # asyncio.wait_for — жёсткий дедлайн поверх curl_cffi timeout=30.
-                # curl_cffi иногда висит вечно на зависших TCP-соединениях
-                # (timeout= внутри libcurl не срабатывает). wait_for гарантирует,
-                # что корутина будет принудительно отменена через 35 с.
+                # curl_cffi иногда висит вечно на зависших TCP — wait_for гарантирует
+                # принудительную отмену через 35 с.
                 resp = await asyncio.wait_for(
                     session.get(
                         url,
@@ -83,39 +105,61 @@ async def fetch(
                     ),
                     timeout=35,
                 )
-                
-                if resp.status_code in RETRYABLE_STATUSES:
+
+                # ── 403/451: IP в блоке, retry бесполезен ──
+                if resp.status_code in BLOCKED_STATUSES:
+                    logger.error("[%s] HTTP %d — IP заблокирован, прекращаем", url, resp.status_code)
+                    raise IPBlockedError(url, resp.status_code)
+
+                # ── 429: rate limit, длинный backoff ──
+                if resp.status_code in RATE_LIMIT_STATUSES:
+                    backoff = RATE_LIMIT_BACKOFF_BASE * (1.5 ** retries) + random.uniform(0, 10)
                     logger.warning(
-                        "[%s] HTTP %d — попытка %d/%d, следующая через %.1f с",
+                        "[%s] HTTP 429 rate limit — попытка %d/%d, sleep %.0f с",
+                        url, retries + 1, MAX_RETRIES, backoff,
+                    )
+                    if proxy:
+                        proxy_manager.remove(proxy)
+                        proxy = proxy_manager.get()
+                    retries += 1
+                    await asyncio.sleep(backoff)
+                    continue
+
+                # ── 5xx: server-side issue, нормальный backoff ──
+                if resp.status_code in RETRYABLE_5XX:
+                    backoff = INITIAL_BACKOFF * (2 ** retries) + random.uniform(0, JITTER_RANGE)
+                    logger.warning(
+                        "[%s] HTTP %d — попытка %d/%d, sleep %.1f с",
                         url, resp.status_code, retries + 1, MAX_RETRIES, backoff,
                     )
                     if proxy:
                         proxy_manager.remove(proxy)
                         proxy = proxy_manager.get()
-
                     retries += 1
                     await asyncio.sleep(backoff)
                     continue
 
+                # ── Success ──
                 if json:
                     return resp.json()
                 return resp.text
 
+            except IPBlockedError:
+                raise  # пробрасываем без retry
             except Exception as e:
                 last_exc = e
+                backoff = INITIAL_BACKOFF * (2 ** retries) + random.uniform(0, JITTER_RANGE)
                 logger.warning(
-                    "[%s] %s — попытка %d/%d, следующая через %.1f с",
+                    "[%s] %s — попытка %d/%d, sleep %.1f с",
                     url, type(e).__name__, retries + 1, MAX_RETRIES, backoff,
                 )
                 if proxy:
                     proxy_manager.remove(proxy)
                     proxy = proxy_manager.get()
-
                 retries += 1
                 await asyncio.sleep(backoff)
 
         raise last_exc or Exception(f"Исчерпаны попытки для {url}")
     finally:
         if close_session:
-            # curl_cffi AsyncSession doesn't explicitly require await close() but close() is safe
             session.close()

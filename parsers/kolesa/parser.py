@@ -17,7 +17,7 @@ import json
 import unicodedata
 from typing import Optional
 
-from parsers.common.http_client import fetch
+from parsers.common.http_client import fetch, IPBlockedError
 from parsers.common.db import get_pool, save_listing
 
 logger = logging.getLogger("parser.kolesa")
@@ -54,7 +54,7 @@ BRAND_FEEDS = [
     "toyota", "nissan", "honda", "mazda", "mitsubishi", "subaru",
     "lexus", "infiniti", "isuzu", "daihatsu", "datsun", "suzuki",
     # Корейские
-    "hyundai", "kia", "genesis", "ssang-yong", "ravon",
+    "hyundai", "kia", "genesis", "ssang-yong", "ravon", "daewoo",
     # Немецкие
     "bmw", "mercedes-benz", "mercedes-maybach", "volkswagen",
     "audi", "opel", "porsche", "mini",
@@ -246,7 +246,15 @@ def _parse_item(obj: dict) -> Optional[dict]:
 
         price_kzt = obj.get("unitPrice")
 
+        # Город — нормализация: "0" → None, "semei" → "semey"
         city = obj.get("city")
+        if city in ("0", "", None):
+            city = None
+        elif isinstance(city, str):
+            city = city.strip().lower()
+            CITY_ALIASES = {"semei": "semey"}
+            city = CITY_ALIASES.get(city, city)
+
         region = obj.get("region")
 
         # URL
@@ -350,12 +358,19 @@ async def parse_city(city: str, session, pool, progress: Optional[dict] = None) 
             # до 45s задержки на каждую страницу из-за retry-цикла — итого 5+ часов
             # на 15 городов. curl_cffi с Chrome impersonation проходит напрямую.
             html = await fetch(url, use_proxy=False, session=session)
-            consecutive_errors = 0  # сбрасываем счётчик при успехе
+            consecutive_errors = 0  # сбрасываем счётчик при УСПЕШНОЙ загрузке HTML
+        except IPBlockedError:
+            # 403/451 → IP в блоке. Не пытаемся retry, а пробрасываем наверх,
+            # чтобы run_parser мог сделать pause-and-retry на уровне батча
+            # либо аварийно завершиться с exit code 1.
+            if progress is not None:
+                progress['active_feeds'].discard(city)
+            raise
         except Exception as e:
             consecutive_errors += 1
             if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
                 logger.error(
-                    "kolesa %s: %d ошибок подряд — интернет недоступен, прерываем фид",
+                    "kolesa %s: %d ошибок подряд — прерываем фид",
                     city, consecutive_errors,
                 )
                 break
@@ -532,7 +547,7 @@ async def _progress_updater(
             logger.warning("progress_updater: ошибка редактирования: %s", e)
 
 
-async def run_parser() -> tuple[int, int]:
+async def run_parser() -> tuple[int, int, bool]:
     """Основная функция — запускает сбор данных по всем городам + брендам параллельно.
 
     Фиды (города + бренды + модели) запускаются батчами по CITY_CONCURRENCY одновременно.
@@ -613,34 +628,89 @@ async def run_parser() -> tuple[int, int]:
             )
         )
 
+    # Счётчики для детекции IP-блока:
+    #   ip_block_events — сколько раз получали IPBlockedError на любом фиде
+    #   consecutive_full_fails — сколько подряд батчей провалились на 100%
+    ip_block_events = 0
+    consecutive_full_fails = 0
+    ip_blocked = False  # финальный флаг для exit code
+
+    async def _process_batch(batch_feeds: list[str], session, pool):
+        """Прогоняет батч фидов, возвращает (n_saved_added, n_new_added, n_failed, n_ip_blocked)."""
+        tasks = [parse_city(feed, session, pool, progress) for feed in batch_feeds]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        b_saved, b_new, b_failed, b_blocked = 0, 0, 0, 0
+        for feed, result in zip(batch_feeds, results):
+            if isinstance(result, IPBlockedError):
+                logger.warning("kolesa %s: IP блок на %s", feed, result.url)
+                b_failed += 1
+                b_blocked += 1
+            elif isinstance(result, Exception):
+                logger.error("kolesa %s: фид упал — %s", feed, result)
+                b_failed += 1
+            else:
+                count, new_count = result
+                b_saved += count
+                b_new += new_count
+                progress['feeds_done'] = progress.get('feeds_done', 0) + 1
+                logger.info("kolesa %s: итого %d (%d новых)", feed, count, new_count)
+        return b_saved, b_new, b_failed, b_blocked
+
     async with requests.AsyncSession(impersonate="chrome") as session:
         # Разбиваем на батчи — не кладём весь сайт одновременно
         for batch_num, i in enumerate(range(0, len(feeds), CITY_CONCURRENCY)):
             batch = feeds[i : i + CITY_CONCURRENCY]
             logger.info("Батч %d/%d фидов: %s", batch_num + 1, total_batches, batch)
-            tasks = [parse_city(feed, session, pool, progress) for feed in batch]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            timeout_count = 0
-            for feed, result in zip(batch, results):
-                if isinstance(result, Exception):
-                    logger.error("kolesa %s: фид упал — %s", feed, result)
-                    timeout_count += 1
-                else:
-                    count, new_count = result
-                    total_saved += count
-                    total_new += new_count
-                    progress['feeds_done'] = progress.get('feeds_done', 0) + 1
-                    logger.info("kolesa %s: итого %d (%d новых)", feed, count, new_count)
+            saved_d, new_d, failed_d, blocked_d = await _process_batch(batch, session, pool)
+            total_saved += saved_d
+            total_new += new_d
+            ip_block_events += blocked_d
 
-            # Если все фиды в батче тайм-аутнули — IP заблокирован, нет смысла продолжать
-            if timeout_count == len(batch):
-                logger.warning("Все %d фидов в батче тайм-аутнули — вероятно IP заблокирован, завершаем", len(batch))
-                break
+            # Анализ результатов батча для health-check
+            full_fail = (failed_d == len(batch))
+            half_fail = (failed_d / len(batch) >= 0.5)
+
+            if full_fail:
+                consecutive_full_fails += 1
+            else:
+                consecutive_full_fails = 0
+
+            # ── Сценарий A: ≥50% батча упали → длинная пауза, без retry ──
+            # Часто spike rate-limit'а — проходит за 1-2 минуты. Не делаем повторный
+            # запуск батча (риск двойной нагрузки), просто притормозим перед следующим.
+            if half_fail and not full_fail:
+                pause = random.uniform(60, 120)
+                logger.warning(
+                    "Батч %d: %d/%d фидов упали (>50%%) — пауза %.0f с перед следующим батчем",
+                    batch_num + 1, failed_d, len(batch), pause,
+                )
+                await asyncio.sleep(pause)
+
+            # ── Сценарий B: 100% батча упали → возможен IP-блок ──
+            if full_fail:
+                if consecutive_full_fails >= 2:
+                    logger.error(
+                        "%d батча подряд упали на 100%% — IP блок подтверждён, прерываем",
+                        consecutive_full_fails,
+                    )
+                    ip_blocked = True
+                    break
+                # Первый full-fail — длинная пауза, может пройдёт
+                pause = random.uniform(120, 180)
+                logger.warning(
+                    "Батч %d целиком упал — пауза %.0f с (попытка восстановиться)",
+                    batch_num + 1, pause,
+                )
+                await asyncio.sleep(pause)
 
             # Пауза между батчами: снижает вероятность rate limit для следующего батча
             if i + CITY_CONCURRENCY < len(feeds):
                 await asyncio.sleep(random.uniform(8.0, 15.0))
+
+    # Если был хоть один IPBlockedError но не дошли до full_fail — фиксируем
+    if ip_block_events > 0 and not ip_blocked:
+        logger.warning("Видели %d IP-block событий за прогон (но без подряд-фейлов батчей)", ip_block_events)
 
     # Останавливаем фоновый updater до финального сообщения
     if updater_task is not None:
@@ -659,20 +729,26 @@ async def run_parser() -> tuple[int, int]:
         el_m, el_s = divmod(int(elapsed), 60)
         el_h, el_m = divmod(el_m, 60)
         elapsed_str = f"{el_h}ч {el_m:02d}м {el_s:02d}с" if el_h else f"{el_m}м {el_s:02d}с"
+        if ip_blocked:
+            icon = "🔴"
+            status = "ПРЕРВАН (IP блок)"
+        else:
+            icon = "✅"
+            status = "завершён"
         await edit_telegram_message(
             progress_msg_id,
-            f"✅ <b>{source_tag}</b> завершён\n"
-            f"<code>[{'█' * 20}]</code> 100%\n"
-            f"Батчей: {total_batches}/{total_batches}\n"
+            f"{icon} <b>{source_tag}</b> {status}\n"
+            f"<code>[{'█' * 20}]</code>\n"
             f"Сохранено: <b>{total_saved:,}</b>  (+{total_new:,} новых)\n"
             f"Время: {elapsed_str}"
         )
 
-    return total_saved, total_new
+    return total_saved, total_new, ip_blocked
 
 
 if __name__ == "__main__":
     import sys
+    import signal
     from dotenv import load_dotenv
     load_dotenv()  # грузит .env из текущей директории (для локального запуска)
     logging.basicConfig(level=logging.INFO)
@@ -685,27 +761,59 @@ if __name__ == "__main__":
     _shard_index = int(_os_main.getenv("KOLESA_SHARD_INDEX", "0"))
     source_tag = f"kolesa[{_shard_index + 1}/{_shard_count}]" if _shard_count > 1 else "kolesa"
 
-    # Smoke-check: если сохранили подозрительно мало — exit 1, чтобы
-    # зависящий от success deactivate-old job НЕ запустился и не помечал
-    # inactive то, что реально живо (просто не долетело до нас из-за IP-блока).
-    # Нижняя граница: 1000 записей per shard (локально 1 шард даёт 3000+/час).
-    # Можно переопределить через MIN_SAVED_THRESHOLD env var.
+    # ──────────────────────────────────────────────────────────────────────
+    # Exit codes (workflow интерпретирует):
+    #   0  = успех, deactivate можно запускать
+    #   1  = IP блок выявлен (consecutive batch fails) — deactivate ОТМЕНИТЬ
+    #   2  = непойманное исключение / DB error
+    #  10  = partial success (сохранили <MIN_SAVED_THRESHOLD но >MIN_PARTIAL)
+    #        — deactivate ОТМЕНИТЬ
+    # ──────────────────────────────────────────────────────────────────────
     MIN_SAVED_THRESHOLD = int(_os_main.getenv("MIN_SAVED_THRESHOLD", "1000"))
+    MIN_PARTIAL_THRESHOLD = int(_os_main.getenv("MIN_PARTIAL_THRESHOLD", "100"))
+
+    # ── SIGTERM handler для GHA timeout ──
+    # GHA даёт 60 сек после kill-сигнала перед force kill. За это время надо
+    # сохранить состояние и закрыть message в Telegram (уже сохранилось как 100%).
+    # Регистрируем флаг — главный цикл проверит через event loop.
+    _sigterm_received = {'flag': False}
+
+    def _on_sigterm(signum, frame):
+        logger.warning("SIGTERM получен — graceful shutdown в процессе")
+        _sigterm_received['flag'] = True
+
+    signal.signal(signal.SIGTERM, _on_sigterm)
 
     start = time.time()
     try:
-        # send_success больше не нужен — run_parser сам рисует финальный
-        # прогресс-бар через edit_telegram_message.
-        total, total_new = asyncio.run(run_parser())
-
-        if total < MIN_SAVED_THRESHOLD:
-            logger.error(
-                "Слишком мало сохранено: %d < %d — вероятно IP заблокирован. "
-                "Exit 1 чтобы отменить deactivate-old job.",
-                total, MIN_SAVED_THRESHOLD,
-            )
-            sys.exit(1)
+        total, total_new, ip_blocked = asyncio.run(run_parser())
+    except IPBlockedError as e:
+        logger.error("IP блок: %s", e)
+        asyncio.run(send_error(source_tag, e))
+        sys.exit(1)
     except Exception as e:
         logger.exception("Парсер kolesa упал")
         asyncio.run(send_error(source_tag, e))
+        sys.exit(2)
+
+    # ── Анализ результата ──
+    if ip_blocked:
+        logger.error("Парсер прерван по IP-блоку. Exit 1 → deactivate отменён.")
         sys.exit(1)
+
+    if total < MIN_PARTIAL_THRESHOLD:
+        logger.error(
+            "Сохранено %d < %d — катастрофически мало (вероятно блок). Exit 1.",
+            total, MIN_PARTIAL_THRESHOLD,
+        )
+        sys.exit(1)
+
+    if total < MIN_SAVED_THRESHOLD:
+        logger.warning(
+            "Partial success: сохранено %d (порог %d). Exit 10 → deactivate отменён.",
+            total, MIN_SAVED_THRESHOLD,
+        )
+        sys.exit(10)
+
+    logger.info("Парсер успешно завершён: %d сохранено, %d новых.", total, total_new)
+    sys.exit(0)
