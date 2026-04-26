@@ -1056,6 +1056,10 @@ async def get_profit_ranking(
         JOIN models m ON m.id = l.model_id
         LEFT JOIN sold ON sold.brand_id = l.brand_id AND sold.model_id = l.model_id AND sold.year = l.year
         WHERE l.is_active = TRUE AND l.year IS NOT NULL{year_filter}
+          -- Отфильтровываем мусорные модели парсера: "(Lada)", "(Toyota)" и кейсы где
+          -- модель == имя бренда (когда parser не извлёк реальную submodel).
+          AND m.name NOT LIKE '(%'
+          AND LOWER(m.name) <> LOWER(b.name)
         GROUP BY b.name, m.name, l.year, sold.median_days
         HAVING COUNT(*) >= $1
         ORDER BY

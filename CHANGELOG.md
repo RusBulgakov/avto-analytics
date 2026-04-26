@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-04-26 — Profitability: filter garbage model names
+
+### Changed
+- **`/profit-ranking` SQL** теперь отфильтровывает мусорные модели в `WHERE`-clause:
+  - `m.name NOT LIKE '(%'` — исключает синтетические fallback'и парсера kolesa типа `"(Lada)"`, `"(Toyota)"` (когда парсер не извлёк реальную submodel — берёт бренд в скобках).
+  - `LOWER(m.name) <> LOWER(b.name)` — исключает кейсы где `model.name == brand.name` (тоже признак отсутствия реальной модели).
+
+### Why
+Скриншот юзера на /profitability показывал топы как `Lada (Lada) — 5 раз` подряд и `Volkswagen Golf — 3 раза`. Дубликаты — потому что бэк уже агрегировал по `brand_id+model_id+year` (разные года), но фронт-таблица `<th>Год</th>` была добавлена в коммит `01bba6c`/после, и пока не была видна в проде. Деплой frontend подтянет колонку. Дополнительно — мусорные модели "(Lada)" теперь не попадают в rankings вообще, поскольку это data-quality артефакт парсера.
+
+### TODO (не сделано в этом коммите)
+- Reparser fix: убрать в `parsers/kolesa/parser.py::_parse_item` fallback на `"(brand)"` для `model_slug` — лучше пропускать запись чем сохранять с мусорной моделью.
+
+---
+
 ## 2026-04-26 — Time-aggregated charts: weekly price-history + price-candles widget
 
 ### Added
