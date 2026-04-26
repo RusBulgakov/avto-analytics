@@ -108,6 +108,21 @@ CREATE INDEX IF NOT EXISTS idx_listings_is_emergency ON listings(is_emergency) W
 CREATE INDEX IF NOT EXISTS idx_listings_is_customs_cleared ON listings(is_customs_cleared) WHERE is_customs_cleared = FALSE;
 
 -- =============================================
+-- FX HISTORY (USD/KZT и др. валюты от NBK)
+-- =============================================
+-- Заполняется parsers/common/fetch_fx.py daily из National Bank of Kazakhstan API.
+-- Используется /forecast endpoint для USD-нормализованной regression
+-- (отделяет тренд цены от тренда KZT).
+CREATE TABLE IF NOT EXISTS fx_history (
+    rate_date    DATE PRIMARY KEY,
+    usd_kzt      NUMERIC(10, 4) NOT NULL,
+    eur_kzt      NUMERIC(10, 4),
+    rub_kzt      NUMERIC(10, 4),
+    cny_kzt      NUMERIC(10, 4),
+    recorded_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- =============================================
 -- ИСТОРИЯ ЦЕН
 -- =============================================
 

@@ -1213,11 +1213,13 @@ async def get_profit_ranking(
 # Прогноз цены — OLS regression on weekly median (PUBLIC)
 # =============================================================================
 
-@router.get("/forecast", summary="Прогноз медианной цены: OLS regression на недельных бакетах")
+@router.get("/forecast", summary="Прогноз медианной цены: OLS regression на недельных бакетах (с USD-нормализацией)")
 async def get_forecast(
     brand_id: int = Query(..., description="ID марки"),
     model_id: Optional[int] = Query(None, description="ID модели (опционально)"),
-    year: Optional[int] = Query(None, ge=1990, le=2030, description="Год выпуска (опционально)"),
+    year: Optional[int] = Query(None, ge=1990, le=2030, description="Конкретный год (опц.)"),
+    year_from: Optional[int] = Query(None, ge=1990, le=2030, description="Год от (для диапазона/поколения)"),
+    year_to: Optional[int] = Query(None, ge=1990, le=2030, description="Год до"),
     history_days: int = Query(90, ge=28, le=365, description="Глубина истории для regression"),
     horizon_days: int = Query(30, ge=7, le=120, description="На сколько дней вперёд прогнозировать"),
     include_inactive: bool = Query(False, description="Учитывать снятые объявления в обучении"),
@@ -1227,29 +1229,29 @@ async def get_forecast(
     ),
 ):
     """
-    Простая regression-based прогнозная модель цен.
+    Прогноз цены — OLS regression на недельных медианах + USD-нормализация.
 
     Алгоритм:
-      1. Достаём price_history за `history_days` дней для (brand, model?, year?).
-         Junk-фильтр (is_emergency / is_customs_cleared / title-keyword)
-         применяется как везде — иначе wreck-цены ломают тренд.
-      2. Агрегируем по недельным бакетам: для каждой недели берём медиану цены.
-      3. OLS: price_median = a + b * week_index
-         (плюс residual std для confidence interval).
-      4. Прогноз на `horizon_days` (грубо округляется в недели):
-         forecast[t] = a + b * (last_week_idx + delta_t)
-         confidence = ±1.96 * residual_std (95% CI)
+      1. Достаём price_history за `history_days` дней. Junk-фильтр стандартный.
+      2. Per-row LEFT JOIN LATERAL с fx_history → берём USD-курс за дату записи
+         (если в выходной нет курса — последний доступный, forward-fill).
+      3. Агрегируем по неделям: median_kzt, median_usd, week_avg_usd_rate.
+      4. OLS отдельно на median_kzt и median_usd. Это даёт два параллельных
+         тренда: "цена в KZT" (как видит покупатель) и "цена в USD"
+         (отделено от тренда KZT — это "истинный" тренд стоимости авто).
+      5. Forecast в обеих валютах. KZT прогноз = USD прогноз * current_rate.
+      6. fx_impact_pct = (kzt_trend - usd_trend) — сколько из изменения цены
+         объясняется курсом, а сколько — реальным движением рынка.
 
     Возвращает:
-      - historical: точки прошедших недель (для фактической линии)
-      - forecast:   точки будущих недель (с CI)
-      - trend_pct_per_month: средний тренд в %/месяц
-      - r2: качество регрессии (доля объяснённой дисперсии)
-      - sample_size: число недель данных
-      - confidence: какую неопределённость закладываем (relative_std)
+      - historical[]: {date, median_kzt, median_usd, count, fx_rate}
+      - forecast[]:   {date, median_kzt, median_usd, low/high (95% CI)}
+      - trend_pct_per_month_kzt и _usd
+      - r2_kzt, r2_usd
+      - fx_impact_pct (доля тренда от FX vs market)
+      - sample_size
     """
     import math
-    from datetime import datetime, timedelta, timezone
 
     conditions = [
         "ph.recorded_at >= NOW() - ($1 * INTERVAL '1 day')",
@@ -1263,6 +1265,10 @@ async def get_forecast(
         conditions.append(f"l.model_id = ${i}"); params.append(model_id); i += 1
     if year:
         conditions.append(f"l.year = ${i}"); params.append(year); i += 1
+    if year_from:
+        conditions.append(f"l.year >= ${i}"); params.append(year_from); i += 1
+    if year_to:
+        conditions.append(f"l.year <= ${i}"); params.append(year_to); i += 1
     if not include_inactive:
         conditions.append("l.is_active = TRUE")
     if not include_junk:
@@ -1277,90 +1283,142 @@ async def get_forecast(
 
     where = " AND ".join(conditions)
     query = f"""
+        WITH priced AS (
+            -- Каждая запись price_history с FX-курсом за день записи (forward-fill)
+            SELECT
+                DATE_TRUNC('week', ph.recorded_at) AS week_start,
+                ph.price_kzt::numeric AS price_kzt,
+                fx.usd_kzt::numeric AS usd_rate,
+                l.id AS listing_id
+            FROM price_history ph
+            JOIN listings l ON l.id = ph.listing_id
+            LEFT JOIN LATERAL (
+                SELECT usd_kzt FROM fx_history
+                WHERE rate_date <= ph.recorded_at::date
+                ORDER BY rate_date DESC LIMIT 1
+            ) fx ON TRUE
+            WHERE {where}
+        )
         SELECT
-            DATE_TRUNC('week', ph.recorded_at) AS week_start,
-            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY ph.price_kzt)::bigint AS median_price,
-            COUNT(DISTINCT l.id)::int AS listing_count
-        FROM price_history ph
-        JOIN listings l ON l.id = ph.listing_id
-        WHERE {where}
-        GROUP BY DATE_TRUNC('week', ph.recorded_at)
+            week_start,
+            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price_kzt)::bigint AS median_kzt,
+            PERCENTILE_CONT(0.5) WITHIN GROUP (
+                ORDER BY (price_kzt / NULLIF(usd_rate, 0))
+            )::numeric(14, 2) AS median_usd,
+            AVG(usd_rate)::numeric(10, 4) AS week_usd_rate,
+            COUNT(DISTINCT listing_id)::int AS listing_count
+        FROM priced
+        WHERE usd_rate IS NOT NULL
+        GROUP BY week_start
         ORDER BY week_start ASC
     """
 
     async with DBSession() as conn:
         rows = await conn.fetch(query, *params)
+        # Текущий курс для конвертации forecast USD → KZT
+        current_rate = await conn.fetchval(
+            "SELECT usd_kzt FROM fx_history ORDER BY rate_date DESC LIMIT 1"
+        )
 
-    points = [(r["week_start"], r["median_price"], r["listing_count"]) for r in rows]
+    points = [
+        (
+            r["week_start"],
+            int(r["median_kzt"]),
+            float(r["median_usd"] or 0),
+            float(r["week_usd_rate"] or 0),
+            r["listing_count"],
+        )
+        for r in rows
+    ]
     n = len(points)
+
+    historical = [
+        {
+            "date": d.isoformat(),
+            "median_kzt": kzt,
+            "median_usd": round(usd, 2),
+            "fx_rate": round(rate, 2),
+            "count": c,
+        }
+        for d, kzt, usd, rate, c in points
+    ]
 
     if n < 4:
         return {
-            "historical": [
-                {"date": d.isoformat(), "median": int(p), "count": c}
-                for d, p, c in points
-            ],
+            "historical": historical,
             "forecast": [],
-            "trend_pct_per_month": None,
-            "r2": None,
+            "trend_pct_per_month_kzt": None,
+            "trend_pct_per_month_usd": None,
+            "r2_kzt": None,
+            "r2_usd": None,
+            "fx_impact_pct": None,
             "sample_size": n,
+            "current_fx_rate": float(current_rate) if current_rate else None,
             "error": "Недостаточно данных для прогноза (минимум 4 недели)",
         }
 
-    # OLS на индексах недель: y = a + b * x
-    xs = list(range(n))
-    ys = [float(p) for _, p, _ in points]
-    x_mean = sum(xs) / n
-    y_mean = sum(ys) / n
-    sxx = sum((x - x_mean) ** 2 for x in xs)
-    sxy = sum((xs[k] - x_mean) * (ys[k] - y_mean) for k in range(n))
-    if sxx == 0:
-        slope = 0.0
-    else:
-        slope = sxy / sxx
-    intercept = y_mean - slope * x_mean
+    # OLS-helper для вычисления slope, intercept, R², residual_std
+    def ols(ys: list[float]) -> tuple[float, float, float, float]:
+        xs = list(range(len(ys)))
+        x_mean = sum(xs) / len(xs)
+        y_mean = sum(ys) / len(ys)
+        sxx = sum((x - x_mean) ** 2 for x in xs)
+        sxy = sum((xs[k] - x_mean) * (ys[k] - y_mean) for k in range(len(xs)))
+        slope = sxy / sxx if sxx else 0.0
+        intercept = y_mean - slope * x_mean
+        residuals = [ys[k] - (intercept + slope * xs[k]) for k in range(len(xs))]
+        rss = sum(r * r for r in residuals)
+        tss = sum((y - y_mean) ** 2 for y in ys)
+        r2 = (1 - rss / tss) if tss > 0 else 0.0
+        rstd = math.sqrt(rss / max(1, len(ys) - 2))
+        return slope, intercept, r2, rstd
 
-    # Residual std и R²
-    residuals = [ys[k] - (intercept + slope * xs[k]) for k in range(n)]
-    rss = sum(r * r for r in residuals)
-    tss = sum((y - y_mean) ** 2 for y in ys)
-    r2 = (1 - rss / tss) if tss > 0 else 0.0
-    # Sample std of residuals (с поправкой на 2 степени свободы — intercept + slope)
-    if n > 2:
-        residual_std = math.sqrt(rss / (n - 2))
-    else:
-        residual_std = math.sqrt(rss / n) if n else 0.0
+    ys_kzt = [float(p[1]) for p in points]
+    ys_usd = [float(p[2]) for p in points]
 
-    # Тренд в %/месяц: slope*4_недели / mean_price
-    trend_pct_per_month = (slope * 4 / y_mean * 100) if y_mean else None
+    slope_kzt, intercept_kzt, r2_kzt, rstd_kzt = ols(ys_kzt)
+    slope_usd, intercept_usd, r2_usd, rstd_usd = ols(ys_usd)
 
-    # Forecast — добавляем недели вперёд
+    mean_kzt = sum(ys_kzt) / n
+    mean_usd = sum(ys_usd) / n
+
+    trend_kzt = (slope_kzt * 4 / mean_kzt * 100) if mean_kzt else 0.0
+    trend_usd = (slope_usd * 4 / mean_usd * 100) if mean_usd else 0.0
+    # FX-вклад: разница между трендом в KZT и трендом в USD.
+    # > 0 → KZT-цены растут быстрее USD-цен из-за ослабления тенге
+    # < 0 → KZT-цены растут медленнее USD-цен (тенге укрепляется)
+    fx_impact = trend_kzt - trend_usd
+
+    # Forecast: используем USD-тренд (он чище, без FX-шума), потом конвертируем в KZT
     horizon_weeks = max(1, math.ceil(horizon_days / 7))
     last_week_start = points[-1][0]
+    last_fx_rate = float(current_rate) if current_rate else points[-1][3]
 
-    historical = [
-        {"date": d.isoformat(), "median": int(p), "count": c}
-        for d, p, c in points
-    ]
     forecast = []
     for w in range(1, horizon_weeks + 1):
         future_idx = (n - 1) + w
-        future_pred = intercept + slope * future_idx
+        pred_usd = intercept_usd + slope_usd * future_idx
+        pred_kzt = pred_usd * last_fx_rate
         future_date = last_week_start + timedelta(days=7 * w)
-        ci_half = 1.96 * residual_std  # 95% CI в чисто гомоскедастичной модели
+        ci_half_kzt = 1.96 * rstd_kzt
         forecast.append({
             "date": future_date.isoformat(),
-            "median": int(max(0, future_pred)),
-            "low": int(max(0, future_pred - ci_half)),
-            "high": int(future_pred + ci_half),
+            "median_kzt": int(max(0, pred_kzt)),
+            "median_usd": round(max(0, pred_usd), 2),
+            "low": int(max(0, pred_kzt - ci_half_kzt)),
+            "high": int(pred_kzt + ci_half_kzt),
         })
 
     return {
         "historical": historical,
         "forecast": forecast,
-        "trend_pct_per_month": round(trend_pct_per_month, 2) if trend_pct_per_month is not None else None,
-        "r2": round(r2, 3),
-        "residual_std_pct": round(residual_std / y_mean * 100, 2) if y_mean else None,
+        "trend_pct_per_month_kzt": round(trend_kzt, 2),
+        "trend_pct_per_month_usd": round(trend_usd, 2),
+        "fx_impact_pct": round(fx_impact, 2),
+        "r2_kzt": round(r2_kzt, 3),
+        "r2_usd": round(r2_usd, 3),
+        "residual_std_pct_kzt": round(rstd_kzt / mean_kzt * 100, 2) if mean_kzt else None,
         "sample_size": n,
         "horizon_weeks": horizon_weeks,
+        "current_fx_rate": round(last_fx_rate, 2),
     }

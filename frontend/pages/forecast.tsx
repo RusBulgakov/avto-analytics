@@ -18,13 +18,29 @@ interface BrandItem { id: number; name: string; slug: string; listings_count: nu
 interface ModelItem { id: number; name: string; slug: string; listings_count: number }
 
 interface ForecastResp {
-    historical: { date: string; median: number; count: number }[];
-    forecast: { date: string; median: number; low: number; high: number }[];
-    trend_pct_per_month: number | null;
-    r2: number | null;
-    residual_std_pct: number | null;
+    historical: {
+        date: string;
+        median_kzt: number;
+        median_usd: number;
+        fx_rate: number;
+        count: number;
+    }[];
+    forecast: {
+        date: string;
+        median_kzt: number;
+        median_usd: number;
+        low: number;
+        high: number;
+    }[];
+    trend_pct_per_month_kzt: number | null;
+    trend_pct_per_month_usd: number | null;
+    fx_impact_pct: number | null;
+    r2_kzt: number | null;
+    r2_usd: number | null;
+    residual_std_pct_kzt: number | null;
     sample_size: number;
     horizon_weeks?: number;
+    current_fx_rate: number | null;
     error?: string;
 }
 
@@ -72,7 +88,8 @@ function ForecastTooltip({ active, payload, label }: any) {
 export default function ForecastPage() {
     const [brandId, setBrandId] = useState<number | null>(null);
     const [modelId, setModelId] = useState<number | null>(null);
-    const [year, setYear] = useState<number | null>(null);
+    const [yearFrom, setYearFrom] = useState<number | null>(null);
+    const [yearTo, setYearTo] = useState<number | null>(null);
     const [horizonDays, setHorizonDays] = useState(30);
 
     const { data: brands } = useSWR<BrandItem[]>(
@@ -88,11 +105,12 @@ export default function ForecastPage() {
     );
 
     const { data: forecast, isLoading } = useSWR<ForecastResp>(
-        brandId ? ['forecast', brandId, modelId, year, horizonDays] : null,
+        brandId ? ['forecast', brandId, modelId, yearFrom, yearTo, horizonDays] : null,
         () => analyticsApi.getForecast({
             brand_id: brandId!,
             ...(modelId ? { model_id: modelId } : {}),
-            ...(year ? { year } : {}),
+            ...(yearFrom ? { year_from: yearFrom } : {}),
+            ...(yearTo ? { year_to: yearTo } : {}),
             horizon_days: horizonDays,
             history_days: 90,
         }),
@@ -103,12 +121,12 @@ export default function ForecastPage() {
         if (!forecast) return [];
         const hist = forecast.historical.map(p => ({
             date: p.date,
-            actual: p.median,
+            actual: p.median_kzt,
             count: p.count,
         }));
         const fc = forecast.forecast.map(p => ({
             date: p.date,
-            forecast: p.median,
+            forecast: p.median_kzt,
             ci_low: p.low,
             ci_high: p.high,
         }));
@@ -116,7 +134,9 @@ export default function ForecastPage() {
     }, [forecast]);
 
     const showChart = !!forecast && !forecast.error && forecast.sample_size >= 4;
-    const trendIsUp = (forecast?.trend_pct_per_month ?? 0) > 0;
+    const trendKztUp = (forecast?.trend_pct_per_month_kzt ?? 0) > 0;
+    const trendUsdUp = (forecast?.trend_pct_per_month_usd ?? 0) > 0;
+    const fxNegative = (forecast?.fx_impact_pct ?? 0) < 0;
 
     return (
         <>
@@ -177,15 +197,31 @@ export default function ForecastPage() {
                                     </select>
                                 </label>
 
-                                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 110 }}>
-                                    <span className="uppercase" style={{ fontSize: 11, color: 'var(--text-muted)' }}>Год</span>
+                                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 100 }}>
+                                    <span className="uppercase" style={{ fontSize: 11, color: 'var(--text-muted)' }}>Год от</span>
                                     <select
                                         className="filter-input"
-                                        value={year ?? ''}
-                                        onChange={e => setYear(e.target.value ? +e.target.value : null)}
+                                        value={yearFrom ?? ''}
+                                        onChange={e => setYearFrom(e.target.value ? +e.target.value : null)}
+                                        style={{ height: 32 }}
+                                        title="Например, поколение Camry XV50: от=2011 до=2018"
+                                    >
+                                        <option value="">любой</option>
+                                        {Array.from({ length: 27 }, (_, i) => CURRENT_YEAR - i).map(y => (
+                                            <option key={y} value={y}>{y}</option>
+                                        ))}
+                                    </select>
+                                </label>
+
+                                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 100 }}>
+                                    <span className="uppercase" style={{ fontSize: 11, color: 'var(--text-muted)' }}>Год до</span>
+                                    <select
+                                        className="filter-input"
+                                        value={yearTo ?? ''}
+                                        onChange={e => setYearTo(e.target.value ? +e.target.value : null)}
                                         style={{ height: 32 }}
                                     >
-                                        <option value="">все года</option>
+                                        <option value="">любой</option>
                                         {Array.from({ length: 27 }, (_, i) => CURRENT_YEAR - i).map(y => (
                                             <option key={y} value={y}>{y}</option>
                                         ))}
@@ -214,7 +250,7 @@ export default function ForecastPage() {
                             <section
                                 style={{
                                     display: 'grid',
-                                    gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+                                    gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
                                     gap: 1, marginTop: 14,
                                     background: 'var(--border)',
                                     border: '1px solid var(--border)',
@@ -223,46 +259,81 @@ export default function ForecastPage() {
                                 }}
                             >
                                 <div className="kpi" style={{ minHeight: 100 }}>
-                                    <div className="uppercase" style={{ fontSize: 11, color: 'var(--text-muted)' }}>Тренд</div>
+                                    <div className="uppercase" style={{ fontSize: 11, color: 'var(--text-muted)' }}>Тренд KZT</div>
                                     <div
                                         style={{
-                                            fontSize: 28, fontWeight: 600, fontFamily: 'var(--display)',
-                                            color: forecast.trend_pct_per_month == null
+                                            fontSize: 26, fontWeight: 600, fontFamily: 'var(--display)',
+                                            color: forecast.trend_pct_per_month_kzt == null
                                                 ? 'var(--text-muted)'
-                                                : trendIsUp ? 'var(--up)' : 'var(--down)',
+                                                : trendKztUp ? 'var(--up)' : 'var(--down)',
                                             marginTop: 4,
                                         }}
                                     >
-                                        {forecast.trend_pct_per_month != null
-                                            ? `${trendIsUp ? '▲' : '▼'} ${Math.abs(forecast.trend_pct_per_month).toFixed(1)}%`
+                                        {forecast.trend_pct_per_month_kzt != null
+                                            ? `${trendKztUp ? '▲' : '▼'} ${Math.abs(forecast.trend_pct_per_month_kzt).toFixed(1)}%`
                                             : '—'}
                                     </div>
-                                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>в месяц по медиане</div>
+                                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>в месяц · в тенге</div>
                                 </div>
                                 <div className="kpi" style={{ minHeight: 100 }}>
-                                    <div className="uppercase" style={{ fontSize: 11, color: 'var(--text-muted)' }}>R² качество</div>
-                                    <div style={{ fontSize: 28, fontWeight: 600, fontFamily: 'var(--display)', marginTop: 4 }}>
-                                        {forecast.r2 != null ? forecast.r2.toFixed(2) : '—'}
+                                    <div className="uppercase" style={{ fontSize: 11, color: 'var(--text-muted)' }}>Тренд USD</div>
+                                    <div
+                                        style={{
+                                            fontSize: 26, fontWeight: 600, fontFamily: 'var(--display)',
+                                            color: forecast.trend_pct_per_month_usd == null
+                                                ? 'var(--text-muted)'
+                                                : trendUsdUp ? 'var(--up)' : 'var(--down)',
+                                            marginTop: 4,
+                                        }}
+                                    >
+                                        {forecast.trend_pct_per_month_usd != null
+                                            ? `${trendUsdUp ? '▲' : '▼'} ${Math.abs(forecast.trend_pct_per_month_usd).toFixed(1)}%`
+                                            : '—'}
+                                    </div>
+                                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>истинный тренд (без FX)</div>
+                                </div>
+                                <div className="kpi" style={{ minHeight: 100 }}>
+                                    <div className="uppercase" style={{ fontSize: 11, color: 'var(--text-muted)' }}>FX вклад</div>
+                                    <div
+                                        style={{
+                                            fontSize: 26, fontWeight: 600, fontFamily: 'var(--display)',
+                                            color: forecast.fx_impact_pct == null
+                                                ? 'var(--text-muted)'
+                                                : fxNegative ? 'var(--info)' : 'var(--accent)',
+                                            marginTop: 4,
+                                        }}
+                                        title="Сколько из тренда KZT-цен объясняется курсом тенге, а сколько — реальным движением рынка"
+                                    >
+                                        {forecast.fx_impact_pct != null
+                                            ? `${forecast.fx_impact_pct > 0 ? '+' : ''}${forecast.fx_impact_pct.toFixed(1)}%`
+                                            : '—'}
                                     </div>
                                     <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                                        {forecast.r2 == null ? '—' :
-                                         forecast.r2 > 0.5 ? 'надёжная регрессия' :
-                                         forecast.r2 > 0.2 ? 'умеренный fit' : 'данные шумные'}
+                                        {forecast.fx_impact_pct == null ? '—' :
+                                         forecast.fx_impact_pct > 0.5 ? 'тенге слабеет → KZT цены растут быстрее' :
+                                         forecast.fx_impact_pct < -0.5 ? 'тенге крепнет → KZT цены растут медленнее' :
+                                         'FX почти не влияет'}
                                     </div>
                                 </div>
                                 <div className="kpi" style={{ minHeight: 100 }}>
-                                    <div className="uppercase" style={{ fontSize: 11, color: 'var(--text-muted)' }}>Шум</div>
-                                    <div style={{ fontSize: 28, fontWeight: 600, fontFamily: 'var(--display)', marginTop: 4 }}>
-                                        ±{forecast.residual_std_pct != null ? forecast.residual_std_pct.toFixed(0) : '—'}%
+                                    <div className="uppercase" style={{ fontSize: 11, color: 'var(--text-muted)' }}>R² (USD)</div>
+                                    <div style={{ fontSize: 26, fontWeight: 600, fontFamily: 'var(--display)', marginTop: 4 }}>
+                                        {forecast.r2_usd != null ? forecast.r2_usd.toFixed(2) : '—'}
                                     </div>
-                                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>residual std (95% CI ≈ 2σ)</div>
+                                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                                        {forecast.r2_usd == null ? '—' :
+                                         forecast.r2_usd > 0.5 ? 'надёжная' :
+                                         forecast.r2_usd > 0.2 ? 'умеренная' : 'шумная'}
+                                    </div>
                                 </div>
                                 <div className="kpi" style={{ minHeight: 100 }}>
                                     <div className="uppercase" style={{ fontSize: 11, color: 'var(--text-muted)' }}>Выборка</div>
-                                    <div style={{ fontSize: 28, fontWeight: 600, fontFamily: 'var(--display)', marginTop: 4 }}>
+                                    <div style={{ fontSize: 26, fontWeight: 600, fontFamily: 'var(--display)', marginTop: 4 }}>
                                         {forecast.sample_size}
                                     </div>
-                                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>недель данных</div>
+                                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                                        недель · USD = {forecast.current_fx_rate ?? '—'}
+                                    </div>
                                 </div>
                             </section>
                         )}
