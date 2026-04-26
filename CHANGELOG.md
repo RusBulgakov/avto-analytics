@@ -62,7 +62,7 @@ UPDATE listings l SET model_id = NULL FROM models m
 
 ---
 
-## 2026-04-26 — Coverage boost: city × brand × model feeds (191 → 297)
+## 2026-04-26 — Coverage boost: city × brand × model feeds (191 → 297) (`73e2400`)
 
 ### Why
 Coverage gap audit (предыдущий commit): наша БД имеет 27-36% от kolesa.kz active listings. Корень — `5000 listings cap` на одном feed. Toyota реально 34k → мы видим 9k через `/cars/toyota/`. Решение: **разбить большие feeds на city-segments**, каждый со своим 5000-cap.
@@ -110,7 +110,7 @@ Probe показал что kolesa поддерживает 3-segment URL'ы: `/
 
 ---
 
-## 2026-04-26 — Parser ETA: adaptive estimate (was showing 17 дней)
+## 2026-04-26 — Parser ETA: adaptive estimate (was showing 17 дней) (`e839b1e`)
 
 ### Why
 Юзер увидел в Telegram-прогрессе: `1.0% • 4ч прошло • ETA: 417ч`. ETA 17 дней при реальном времени работы 4-5 часов — abusive bug.
@@ -162,7 +162,7 @@ Mercedes-Benz  2,817 / 12,726 = 22%
 
 ---
 
-## 2026-04-26 — Backtest: filter flash-listings (teaser prices)
+## 2026-04-26 — Backtest: filter flash-listings (teaser prices) (`6358af0`)
 
 ### Why
 Юзер: "https://kolesa.kz/a/show/216120352 — цена Купил 1.6 млн, а на страничке 16 млн".
@@ -193,7 +193,7 @@ Investigation:
 
 ---
 
-## 2026-04-26 — Backtest: честное название колонки + market_movement metric
+## 2026-04-26 — Backtest: честное название колонки + market_movement metric (`0289135`)
 
 ### Why
 Юзер: "откуда значения 'Купил'? у нас же нет данных за какую цену была куплена машина?"
@@ -236,7 +236,7 @@ Subaru Forester 2016       3.90M   4.60M      7.59M       +65.0%     +94.6%
 
 ---
 
-## 2026-04-26 — Backtest top-10: outlier guards для display-tier
+## 2026-04-26 — Backtest top-10: outlier guards для display-tier (`fdc816b`)
 
 ### Why
 Юзер увидел в "Топ-10 успешных сделок" `Toyota Camry 2020 — Купил 10K → Market 12.0M → ARB +119,900%`. Очевидно мусор: 10К ₸ — это либо typo продавца, либо парсер записал неправильную цену. Главный SQL-CTE имел outlier-guard (`>= 100k ₸ AND > p25 * 0.30`), но **отдельный top_query для top-winners table его не имел** — забыли применить.
@@ -273,7 +273,7 @@ Subaru Forester 2016       3.90M   4.60M      7.59M       +65.0%     +94.6%
 
 ---
 
-## 2026-04-26 — Profitability: brand/model/city filters + sortable columns
+## 2026-04-26 — Profitability: brand/model/city filters + sortable columns (`1bfdca6`)
 
 ### Why
 Юзер увидел /profitability с топ списком в формате "Bmw 525 1994 → Mercedes E230 1992 → Toyota Alphard 2006…" но **не мог сузить выборку под себя** (только year-range / minVol / limit). А для дешёвой Camry или конкретно Алматы — нужна была фильтрация.
@@ -292,7 +292,7 @@ Subaru Forester 2016       3.90M   4.60M      7.59M       +65.0%     +94.6%
 
 ---
 
-## 2026-04-26 — USD/KZT ticker: реальные deltas из fx_history
+## 2026-04-26 — USD/KZT ticker: реальные deltas из fx_history (`5cb4f42`)
 
 ### Why
 Юзер заметил `USD/KZT 464.26 ▲ 0.00%` — фантомный 0%. Корень: старый `useUsdKzt` хук тянул rate с `open.er-api.com` и **считал delta через localStorage-snapshot**. Snapshot обновлялся раз в 24ч, и при первом fetch'е сегодняшнего дня `prev = current` → delta = 0. Также:
@@ -325,7 +325,7 @@ Current rate: 464.86 ₸ on 2026-04-26
 
 ---
 
-## 2026-04-26 — Per-listing fair-price predictor (regression-based)
+## 2026-04-26 — Per-listing fair-price predictor (regression-based) (`e9c51ce`)
 
 ### Added
 - **`/api/v1/analytics/valuation`** переписан с naive p10/p90 percentile lookup на **regression-based predictor**:
@@ -362,7 +362,7 @@ Naive percentile (p10/p90) предполагает что все 5,000 Camry в
 
 ---
 
-## 2026-04-26 — Forecast V3 (mileage + holidays) + Backtest V2 (arb-margin)
+## 2026-04-26 — Forecast V3 (mileage + holidays) + Backtest V2 (arb-margin) (`fabb569`)
 
 Три родственных upgrade'a по списку "что хочется добавить":
 
@@ -420,7 +420,7 @@ Per-listing fair-price predictor (`/listing` page) — следующий round.
 
 ---
 
-## 2026-04-26 — `is_in_stock` flag — "В наличии" vs "На заказ"
+## 2026-04-26 — `is_in_stock` flag — "В наличии" vs "На заказ" (`989bb5a`)
 
 ### Why
 Юзер указал что kolesa разделяет объявления на "В наличии" и "На заказ" (последние — машины ещё не привезены в KZ, цена индикативная, часто китайцы BYD / Tesla / Hongqi). Без фильтра они **искажают аналитику**:
@@ -458,7 +458,7 @@ Probe показал ~7% китайских объявлений могут бы
 
 ---
 
-## 2026-04-26 — Forecast V2 + Backtest стратегии перепродажи
+## 2026-04-26 — Forecast V2 + Backtest стратегии перепродажи (`054dff5`, `a275948`)
 
 ### Added
 - **`fx_history` table** — daily USD/EUR/RUB/CNY → KZT курсы от National Bank of KZ. Backfill 90 дней ad-hoc, далее `parsers/common/fetch_fx.py` daily через `.github/workflows/fetch_fx.yml` (06:00 UTC).
@@ -510,7 +510,7 @@ Insight: сигналы быстро закрываются (7 дней median),
 
 ---
 
-## 2026-04-26 — MVP Forecast: OLS regression на недельных медианах
+## 2026-04-26 — MVP Forecast: OLS regression на недельных медианах (`3577101`)
 
 ### Added
 - **`GET /api/v1/analytics/forecast`** — endpoint linear-regression прогноза цены. Параметры: `brand_id` (обяз.), `model_id`, `year`, `history_days` (default 90), `horizon_days` (default 30, до 120), `include_inactive`, `include_junk`. Возвращает: `{historical, forecast, trend_pct_per_month, r2, residual_std_pct, sample_size, horizon_weeks}`.
@@ -549,7 +549,7 @@ Insight: сигналы быстро закрываются (7 дней median),
 
 ---
 
-## 2026-04-26 — Real junk flags from kolesa search-фильтров
+## 2026-04-26 — Real junk flags from kolesa search-фильтров (`1ff7638`, `fe612ea`)
 
 ### Why
 Прошлый junk-filter был эвристикой: title-keyword (ловил 6 listings — kolesa в title только "Brand Model Год г.") + price-outlier (median ± 50%-200%, ловит kolesa-junk через цену). Эвристика OK, но **не точна** — продавец вполне может поставить честную цену на битую машину, и она проскользнёт.
@@ -587,7 +587,7 @@ Insight: сигналы быстро закрываются (7 дней median),
 
 ---
 
-## 2026-04-26 — Long-tail city cleanup: +56 city normalizations
+## 2026-04-26 — Long-tail city cleanup: +56 city normalizations (`a12b2f4`)
 
 ### Changed
 - **`parsers/common/db.py::_CITY_NORMALIZATIONS`** расширен с **36 → 84 entries**. Добавлены:
@@ -611,7 +611,7 @@ Insight: сигналы быстро закрываются (7 дней median),
 
 ---
 
-## 2026-04-26 — Junk-listing filter: аварийные / не на ходу / не растаможенные
+## 2026-04-26 — Junk-listing filter: аварийные / не на ходу / не растаможенные (`b5e6eeb`)
 
 ### Why
 Юзер увидел в `/profitability` BMW 525 1994 с margin 73% — фантом. Причина: kolesa.kz парсит **всё подряд**, включая аварийные / не на ходу / не растаможенные / на запчасти. Битый BMW за 600k вместе с целыми за 1.6M ломает p25 (buy_price) — оценка маржи получается мусорной.
@@ -649,7 +649,7 @@ Title-keyword filter ловит только **6 listings** в БД (0.01%) — 
 
 ---
 
-## 2026-04-26 — Mobile responsive pass
+## 2026-04-26 — Mobile responsive pass (`ce5cda1`)
 
 ### Added
 - **Burger menu в `Topbar`** — на ширине <640px все nav-ссылки (`.nav`) скрыты, а появляется кнопка `☰`. По клику разворачивается fullscreen overlay с большими route-tap'ами (Дашборд / Марки / Рентабельность / Прогноз). Overlay закрывается при клике на ссылку, на пустое место, или при route change. `body` блокируется от скролла пока меню открыто.
@@ -670,7 +670,7 @@ Title-keyword filter ловит только **6 listings** в БД (0.01%) — 
 
 ---
 
-## 2026-04-26 — Boost coverage: OLX per-city + mycar no-proxy
+## 2026-04-26 — Boost coverage: OLX per-city + mycar no-proxy (`fd84f6f`)
 
 ### Changed
 - **`parsers/olx/parser.py`**: один root-фид → **16 фидов** (root + 15 per-city). OLX режет global pagination на ~10 страниц (~400 объявлений из десятков тысяч). Per-city фиды (`q-almaty/`, `q-astana/`, …) обходят этот cap. Добавлен **across-feeds dedup** через `seen_ids: set` — один и тот же `external_id` не сохраняется дважды если попался в нескольких фидах. **Stop-on-repeat-page**: если все ID на текущей странице уже видели — стоп (защита от OLX-зацикленной пагинации). Delay уменьшен 5–14с → 2.5–5с между страницами одного фида + 8–15с между фидами.
@@ -695,7 +695,7 @@ OLX парсер вообще не видел >400 объявлений всег
 
 ---
 
-## 2026-04-26 — City normalization: 14+ городов добавлены на карту
+## 2026-04-26 — City normalization: 14+ городов добавлены на карту (`dd55c53`)
 
 ### Added
 - **`parsers/common/db.py::_normalize_city`** — helper, нормализующий city перед `INSERT`. Маппит 36 кириллических имён в latin slug'и, обрезает мусорные суффиксы `" - Сегодня в"` / `" -"` (только с пробелами вокруг дефиса — не ломает `ust-kamenogorsk` / `land-rover`). Вызывается в начале `save_listing`. Защита от регрессии — независимо от того, что присылает парсер.
@@ -719,7 +719,7 @@ OLX и mycar парсеры пишут city в кириллице (`"Алмат�
 
 ---
 
-## 2026-04-26 — Распространение `brand_name`/`model_name` на остальные парсеры
+## 2026-04-26 — Распространение `brand_name`/`model_name` на остальные парсеры (`bcd3b43`)
 
 ### Changed
 - **`parsers/mycar/parser.py`**, **`parsers/olx/parser.py`**, **`parsers/newauto/parser.py`**, **`parsers/avtorynok/parser.py`** теперь возвращают в data dict явные поля `brand_name` и `model_name` (раньше передавали только `*_slug` + `title`, db.py приходилось вытаскивать имя из title через split-фолбэк). Симметрия с уже-обновлённым `parsers/kolesa/parser.py`.
