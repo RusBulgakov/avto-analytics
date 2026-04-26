@@ -11,6 +11,7 @@ kolesa/parser.py
 """
 import asyncio
 import logging
+import os
 import random
 import re
 import json
@@ -686,7 +687,10 @@ async def run_parser() -> tuple[int, int, bool]:
     # 3 параллельных фида вместо 5: GitHub Actions datacenter IP блокируется
     # kolesa.kz при слишком высоком burst rate (5 × req/3s = 100 req/min → timeout).
     # При 3 параллельных = 60 req/min — проходит без блока.
-    CITY_CONCURRENCY = 3
+    # Concurrency регулируется через env (workflow задаёт 2 при 3 шардах,
+    # чтобы total simultaneous = 6 — предел kolesa anti-bot).
+    # Default 3 для local runs (один процесс).
+    CITY_CONCURRENCY = int(os.getenv("KOLESA_CITY_CONCURRENCY", "3"))
 
     feeds, shard_index, shard_count = _get_feeds_for_shard()
 

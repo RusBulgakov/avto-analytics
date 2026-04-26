@@ -1,15 +1,19 @@
 name: Kolesa Full Parse (sharded)
 
 # Отдельный workflow для kolesa.kz — самого тяжёлого источника.
-# 191 фид в одном job не влезает (GHA лимит 360 мин).
-# Решение: шардирование на 2 параллельных job'а × ~96 фидов × ~5ч каждый.
+# 297 фидов в одном job не влезает (GHA лимит 360 мин).
+# Решение: шардирование на 3 параллельных job'а × ~99 фидов × ~3.5ч каждый.
 #
-# Почему 2, а не 4: kolesa.kz агрессивно блокирует IP из Azure-датацентра
-# GitHub Actions. При 4 шардах × 3 concurrent = 12 одновременных запросов
-# триггерит anti-bot и сайт банит ВСЕ шарды. 2 шарда × 3 = 6 одновременных
-# проходит без блока (проверено эмпирически).
+# Constraint: kolesa.kz блокирует IP из Azure-датацентра GitHub Actions
+# при >6 одновременных запросах. Балансируем шарды × concurrency:
 #
-# После УСПЕШНОГО завершения ВСЕХ 2 шардов → запускается deactivate-old.
+#   Было: 2 шарда × 3 concurrency = 6 simultaneous, ~5ч wall-clock
+#   Стало: 3 шарда × 2 concurrency = 6 simultaneous, ~3.5ч wall-clock
+#
+# Total simultaneous то же, kolesa не банит. Wall-clock быстрее за счёт
+# параллелизма jobs (3 одновременно вместо 2).
+#
+# После УСПЕШНОГО завершения ВСЕХ 3 шардов → запускается deactivate-old.
 # Если хоть один шард упал/прерван → deactivate НЕ запускается,
 # чтобы не помечать inactive то, что не успели обновить (сохраняем данные).
 
@@ -23,9 +27,9 @@ on:
   workflow_dispatch:
     inputs:
       shard_count:
-        description: 'Количество шардов (по умолчанию 2)'
+        description: 'Количество шардов (по умолчанию 3)'
         required: false
-        default: '2'
+        default: '3'
 
 # Не запускать параллельно — если предыдущий прогон ещё идёт, новый встанет в очередь.
 # cancel-in-progress: false — не убиваем начатый прогон,
@@ -36,7 +40,7 @@ concurrency:
 
 env:
   PYTHONPATH: ${{ github.workspace }}
-  SHARD_COUNT: ${{ github.event.inputs.shard_count || '2' }}
+  SHARD_COUNT: ${{ github.event.inputs.shard_count || '3' }}
 
 jobs:
 
@@ -44,14 +48,14 @@ jobs:
   # Шаг 1: Параллельный запуск шардов kolesa
   # ─────────────────────────────────────────
   kolesa-shard:
-    name: 🕷️ Kolesa shard ${{ matrix.shard_index }}/2
+    name: 🕷️ Kolesa shard ${{ matrix.shard_index }}/3
     runs-on: ubuntu-latest
-    timeout-minutes: 350  # ~5.8 ч — запас над ожидаемыми 4–5ч на шард (96 фидов)
+    timeout-minutes: 350  # ~5.8 ч — запас над ожидаемыми 3.5ч на шард (99 фидов)
     strategy:
       fail-fast: false   # если один шард упал — остальные продолжают работать
       matrix:
         # Если меняешь SHARD_COUNT — синхронизируй этот список!
-        shard_index: [0, 1]
+        shard_index: [0, 1, 2]
 
     steps:
       - uses: actions/checkout@v4
@@ -72,7 +76,10 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           KOLESA_SHARD_INDEX: ${{ matrix.shard_index }}
-          KOLESA_SHARD_COUNT: 2
+          KOLESA_SHARD_COUNT: 3
+          # Concurrency 3→2: компенсирует увеличение шардов (2→3) чтобы
+          # сохранить total simultaneous = 6 (предел kolesa anti-bot).
+          KOLESA_CITY_CONCURRENCY: 2
           # Smoke-check: парсер exit 1 если сохранит < этого порога
           # (значит IP заблокирован и запускать deactivate нельзя).
           # 1 шард = 96 фидов, локально один процесс даёт 16k+ за 5ч,
