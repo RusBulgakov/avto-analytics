@@ -129,7 +129,52 @@ MODEL_FEEDS = [
 # Итоговый список задач: сначала города (региональный охват),
 # затем все бренды (национальный охват), затем тяжёлые модели (обход лимита 5000/фид).
 # ON CONFLICT в save_listing обрабатывает дубли — только обновляет last_seen_at.
-ALL_FEEDS = CITIES + list(dict.fromkeys(BRAND_FEEDS)) + MODEL_FEEDS
+# ─── City × Brand combinatorial feeds (Phase 2 coverage boost) ───────
+# Каждый brand-feed на kolesa упирается в 5000-листинг cap. Toyota ~34k,
+# мы видим только 9k через `/cars/toyota/`. Решение: запросить отдельно
+# `/cars/toyota/almaty/`, `/cars/toyota/astana/` и т.д. — каждая такая
+# комбинация имеет свой 5000-cap. Top-5 городов × top-15 брендов = 75
+# новых feeds, которые покрывают ~80% реального gap.
+CITY_BRAND_TOP_CITIES = ["almaty", "astana", "shymkent", "taraz", "karaganda"]
+CITY_BRAND_TOP_BRANDS = [
+    "toyota", "vaz", "hyundai", "kia", "mercedes-benz",
+    "volkswagen", "bmw", "chevrolet", "nissan", "lexus",
+    "audi", "mitsubishi", "subaru", "daewoo", "honda",
+]
+CITY_BRAND_FEEDS = [
+    f"{brand}/{city}"
+    for brand in CITY_BRAND_TOP_BRANDS
+    for city in CITY_BRAND_TOP_CITIES
+]
+
+# ─── City × Brand × Model для самых "тяжёлых" моделей (Phase 2 coverage) ─
+# Toyota Camry в Алматы = 3,200+ объявлений (vs city-brand cap 5k).
+# Модельные city-feeds для топ-моделей разбивают heaviest groups дальше.
+# 3 топ-города × 10 моделей-тяжеловесов = 30 feeds
+CITY_BRAND_MODEL_TOP_CITIES = ["almaty", "astana", "shymkent"]
+CITY_BRAND_MODEL_TOP_MODELS = [
+    "toyota/camry", "toyota/corolla",
+    "toyota/land-cruiser", "toyota/land-cruiser-prado",
+    "vaz/2107", "vaz/priora", "vaz/granta",
+    "hyundai/accent", "hyundai/sonata", "hyundai/tucson",
+]
+CITY_BRAND_MODEL_FEEDS = [
+    f"{brand_model}/{city}"
+    for brand_model in CITY_BRAND_MODEL_TOP_MODELS
+    for city in CITY_BRAND_MODEL_TOP_CITIES
+]
+
+# Итог: 15 cities + 80 brands + 97 models + 75 city×brand + 30 city×brand×model
+# = ~297 уникальных feeds (минус дубли). Дубли обрабатываются ON CONFLICT
+# в save_listing — один листинг попадает в несколько feeds, фактически
+# сохраняется один раз.
+ALL_FEEDS = list(dict.fromkeys(
+    CITIES
+    + BRAND_FEEDS
+    + MODEL_FEEDS
+    + CITY_BRAND_FEEDS
+    + CITY_BRAND_MODEL_FEEDS
+))
 
 # Маппинг типов кузова из колес-атрибутов
 BODY_TYPE_MAP = {

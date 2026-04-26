@@ -62,6 +62,54 @@ UPDATE listings l SET model_id = NULL FROM models m
 
 ---
 
+## 2026-04-26 — Coverage boost: city × brand × model feeds (191 → 297)
+
+### Why
+Coverage gap audit (предыдущий commit): наша БД имеет 27-36% от kolesa.kz active listings. Корень — `5000 listings cap` на одном feed. Toyota реально 34k → мы видим 9k через `/cars/toyota/`. Решение: **разбить большие feeds на city-segments**, каждый со своим 5000-cap.
+
+### Added (`parsers/kolesa/parser.py`)
+- **`CITY_BRAND_FEEDS`** — топ-5 городов × топ-15 брендов = **75 новых feeds**:
+  ```
+  /cars/toyota/almaty/    — 9,909 listings (Toyota в Алматы)
+  /cars/vaz/almaty/       — 1,440
+  /cars/lexus/astana/     — 773
+  /cars/mercedes-benz/shymkent/ — 1,211
+  ...
+  ```
+- **`CITY_BRAND_MODEL_FEEDS`** — топ-3 города × 10 модельных-тяжеловесов = **30 новых feeds**:
+  ```
+  /cars/toyota/camry/almaty/    — 3,218 (раньше brand-feed уже капал на 5k)
+  /cars/toyota/land-cruiser-prado/almaty/
+  /cars/vaz/2107/shymkent/
+  /cars/hyundai/sonata/astana/
+  ...
+  ```
+- **ALL_FEEDS** теперь dedup-list: `cities + brands + models + city×brand + city×brand×model = 298 - 1 дубль = 297`
+- Парсер уже **умеет nested slash-paths** через существующую логику `f"{BASE_URL}/cars/{feed}/"`. Не нужно менять URL builder — `feed = "toyota/almaty"` → `/cars/toyota/almaty/` работает.
+
+### URL pattern verified
+Probe показал что kolesa поддерживает 3-segment URL'ы: `/cars/{brand}/{model}/{city}/`. Special case `mercedes-benz/e-class/almaty/` → kolesa redirect'ит на `/cars/mercedes-benz/almaty/` (model-filter с city не индексируется). Не критично — мы получим Mercedes-Benz всех моделей в Алматы.
+
+### Expected coverage uplift
+- **Теоретический потолок** новых feeds: 75 × ~1,500 average listings + 30 × ~500 = ~127k new exposure
+- С dedup (один листинг может попасть в несколько feeds): **net new unique ~30-50k**
+- Coverage было 27-36%, после прогона ожидаем **50-60%** для топ-брендов
+
+### Performance impact
+- Feed count 191 → 297 (+55%)
+- 2 shards × concurrency 3 = 6 simultaneous (без изменений, чтобы не триггерить kolesa anti-bot)
+- Длинные brand-feeds (toyota brand-level) всё ещё доминируют по времени, новые city-сегменты быстро завершаются (~1500 listings = 75 pages = 5 минут each)
+- Ожидаемое время per shard: 4 → ~5-6 часов (внутри 360-min GHA timeout)
+
+### Не покрыто (отложено)
+- Per-price-range feeds (`?price_from=X&price_to=Y`) — даст ещё 1.5-2× coverage, но требует ~10 диапазонов × 191 brand = 1,910 feeds. Не влезет в текущую инфраструктуру без 4-6 шардов (что упирается в IP-block kolesa).
+- 4-shards + concurrency 2 эксперимент — отложено пока не убедимся что текущие 297 feeds стабильны.
+
+### Adaptive ETA fix (`e839b1e`)
+Был в предыдущем commit'е, отдельно — теперь % считается по фидам, ETA пересчитывается из реального avg pages-per-feed. На user's скриншоте было `1.0% / 413ч`, после фикса будет `46.9% / 4ч 31м` для аналогичного state.
+
+---
+
 ## 2026-04-26 — Parser ETA: adaptive estimate (was showing 17 дней)
 
 ### Why
