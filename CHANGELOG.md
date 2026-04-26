@@ -62,6 +62,44 @@ UPDATE listings l SET model_id = NULL FROM models m
 
 ---
 
+## 2026-04-26 — `is_in_stock` flag — "В наличии" vs "На заказ"
+
+### Why
+Юзер указал что kolesa разделяет объявления на "В наличии" и "На заказ" (последние — машины ещё не привезены в KZ, цена индикативная, часто китайцы BYD / Tesla / Hongqi). Без фильтра они **искажают аналитику**:
+- backtest: "На заказ" не закрывается в обычном смысле — переоформляется как заказ → ломает win rate
+- profit-ranking: индикативная цена "На заказ" обычно занижена (без learning curve), даёт фантомную маржу
+- forecast: тренд цены "На заказ" не отражает реальный рынок б/у
+
+Probe kolesa search-JSON: поле `availability` уже **в top-level** payload, парсить detail-page не нужно.
+
+### Added
+- **Schema migration**:
+  ```sql
+  ALTER TABLE listings ADD COLUMN is_in_stock BOOLEAN DEFAULT NULL;
+  CREATE INDEX idx_listings_is_in_stock ON listings(is_in_stock) WHERE is_in_stock = FALSE;
+  ```
+  TRUE = "В наличии", FALSE = "На заказ", NULL = unknown / не-kolesa источник.
+- **Kolesa parser** (`_parse_item`): читает `obj.get("availability")`, маппит `'В наличии' → True, 'На заказ' → False, else None`. Передаёт в data dict как `is_in_stock`.
+- **`save_listing`** (parsers/common/db.py): добавлен 19-й параметр `is_in_stock`. ON CONFLICT использует `COALESCE(EXCLUDED.is_in_stock, listings.is_in_stock)` — не перезаписываем existing TRUE/FALSE на NULL если парсер не прислал значение (защита для re-runs других парсеров).
+
+### Changed
+- **Analytics endpoints** — junk-filter (3-слойный был emergency + customs + title) → теперь **4-слойный**:
+  ```
+  AND (l.is_emergency IS NULL OR l.is_emergency = FALSE)
+  AND (l.is_customs_cleared IS NULL OR l.is_customs_cleared = TRUE)
+  AND (l.is_in_stock IS NULL OR l.is_in_stock = TRUE)   ← новое
+  AND title NOT ILIKE ALL([...])
+  ```
+  Применено в `/profit-ranking`, `/price-boxplot`, `/market-overview`, `/forecast`, `/backtest` — все 5 sites одним replace_all'ом, проверено grep-ом (count=5).
+
+### Backfill
+Для существующих active kolesa-listings `is_in_stock = NULL`. После следующего полного парсер-прогона (cron каждые 6h) поле заполнится автоматически из `availability`. До этого `IS NULL` пропускает фильтр (default behavior).
+
+### Estimated impact
+Probe показал ~7% китайских объявлений могут быть "На заказ" (BYD, Hongqi, Zeekr, Voyah, Tesla). Для этих марок профит-ranking и backtest сейчас показывали неправильные цифры — теперь будут корректные.
+
+---
+
 ## 2026-04-26 — Forecast V2 + Backtest стратегии перепродажи
 
 ### Added

@@ -346,6 +346,7 @@ async def market_overview(
         # DB-flags (из parsers/kolesa/flags.py) + title-keyword fallback
         conditions.append("(l.is_emergency IS NULL OR l.is_emergency = FALSE)")
         conditions.append("(l.is_customs_cleared IS NULL OR l.is_customs_cleared = TRUE)")
+        conditions.append("(l.is_in_stock IS NULL OR l.is_in_stock = TRUE)")
         conditions.append("""l.title NOT ILIKE ALL(ARRAY[
             '%не на ходу%', '%аварий%', '%битая%', '%битый%',
             '%не растамож%', '%не растам%', '%без документ%',
@@ -431,6 +432,7 @@ async def get_price_boxplot(
     junk_keyword_clause = "" if include_junk else """
           AND (l.is_emergency IS NULL OR l.is_emergency = FALSE)
           AND (l.is_customs_cleared IS NULL OR l.is_customs_cleared = TRUE)
+          AND (l.is_in_stock IS NULL OR l.is_in_stock = TRUE)
           AND l.title NOT ILIKE ALL(ARRAY[
             '%не на ходу%', '%аварий%', '%битая%', '%битый%',
             '%не растамож%', '%не растам%', '%без документ%',
@@ -444,6 +446,7 @@ async def get_price_boxplot(
     if not include_junk:
         conditions.append("(l.is_emergency IS NULL OR l.is_emergency = FALSE)")
         conditions.append("(l.is_customs_cleared IS NULL OR l.is_customs_cleared = TRUE)")
+        conditions.append("(l.is_in_stock IS NULL OR l.is_in_stock = TRUE)")
         conditions.append("""l.title NOT ILIKE ALL(ARRAY[
             '%не на ходу%', '%аварий%', '%битая%', '%битый%',
             '%не растамож%', '%не растам%', '%без документ%',
@@ -1093,6 +1096,7 @@ async def get_profit_ranking(
     junk_keyword_filter = "" if include_junk else """
           AND (l.is_emergency IS NULL OR l.is_emergency = FALSE)
           AND (l.is_customs_cleared IS NULL OR l.is_customs_cleared = TRUE)
+          AND (l.is_in_stock IS NULL OR l.is_in_stock = TRUE)
           AND l.title NOT ILIKE ALL(ARRAY[
             '%не на ходу%', '%аварий%', '%битая%', '%битый%',
             '%не растамож%', '%не растам%', '%без документ%',
@@ -1274,6 +1278,7 @@ async def get_forecast(
     if not include_junk:
         conditions.append("(l.is_emergency IS NULL OR l.is_emergency = FALSE)")
         conditions.append("(l.is_customs_cleared IS NULL OR l.is_customs_cleared = TRUE)")
+        conditions.append("(l.is_in_stock IS NULL OR l.is_in_stock = TRUE)")
         conditions.append("""l.title NOT ILIKE ALL(ARRAY[
             '%не на ходу%', '%аварий%', '%битая%', '%битый%',
             '%не растамож%', '%не растам%', '%без документ%',

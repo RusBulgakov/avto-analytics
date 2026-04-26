@@ -293,6 +293,18 @@ def _parse_item(obj: dict) -> Optional[dict]:
         candidates = [m for m in (title_model, attr_model) if m and isinstance(m, str)]
         model = max(candidates, key=lambda m: len(m.split())) if candidates else None
 
+        # availability: 'В наличии' / 'На заказ' / (other rare) → is_in_stock
+        # На заказ — машина ещё не привезена в KZ (часто китайцы / Tesla),
+        # цена индикативная, искажает аналитику. Хранится в JSON top-level
+        # (search-page), парсить детальную страницу не нужно.
+        availability = obj.get("availability")
+        if availability == "В наличии":
+            is_in_stock = True
+        elif availability == "На заказ":
+            is_in_stock = False
+        else:
+            is_in_stock = None
+
         # Валидация — отсекаем синтетические модели (год, =brand, цифры).
         # При невалидной — model=None → listing сохранится без model_id (LEFT JOIN),
         # данные сохраняются, но мусорные привязки не плодятся.
@@ -369,6 +381,7 @@ def _parse_item(obj: dict) -> Optional[dict]:
             "model_slug": _slug(model),
             "brand_name": brand,
             "model_name": model,
+            "is_in_stock": is_in_stock,
             "title": name,
             "year": year,
             "price_kzt": price_kzt,

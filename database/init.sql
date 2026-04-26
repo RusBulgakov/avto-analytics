@@ -94,6 +94,8 @@ CREATE TABLE IF NOT EXISTS listings (
     is_emergency        BOOLEAN DEFAULT NULL,      -- TRUE = аварийная или не на ходу
     is_customs_cleared  BOOLEAN DEFAULT NULL,      -- FALSE = не растаможен
     flags_updated_at    TIMESTAMPTZ DEFAULT NULL,  -- когда последний раз обновляли флаги
+    -- Availability (заполняется kolesa parser из top-level field availability)
+    is_in_stock         BOOLEAN DEFAULT NULL,      -- TRUE = "В наличии", FALSE = "На заказ"
     UNIQUE (source_id, external_id)
 );
 
@@ -106,6 +108,7 @@ CREATE INDEX idx_listings_first_seen ON listings(first_seen_at);
 -- Partial indexes — только для "плохих" listings (TRUE / FALSE) — отбрасываем NULL/нормальные
 CREATE INDEX IF NOT EXISTS idx_listings_is_emergency ON listings(is_emergency) WHERE is_emergency = TRUE;
 CREATE INDEX IF NOT EXISTS idx_listings_is_customs_cleared ON listings(is_customs_cleared) WHERE is_customs_cleared = FALSE;
+CREATE INDEX IF NOT EXISTS idx_listings_is_in_stock ON listings(is_in_stock) WHERE is_in_stock = FALSE;
 
 -- =============================================
 -- FX HISTORY (USD/KZT и др. валюты от NBK)

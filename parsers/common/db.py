@@ -256,13 +256,13 @@ async def save_listing(conn: asyncpg.Connection, data: dict) -> str:
             source_id, external_id, brand_id, model_id, title, year, mileage_km,
             engine_volume_cc, engine_power_hp, body_type_id, fuel_type_id,
             transmission_id, drive_type_id, color, city, region, condition,
-            listing_url, is_active, last_seen_at
+            listing_url, is_active, last_seen_at, is_in_stock
         )
         SELECT
             s.id, $2, b.id, m.id, $5, $6, $7,
             $8, $9, bt.id, ft.id,
             tt.id, dt.id, $14, $15, $16, $17,
-            $18, TRUE, NOW()
+            $18, TRUE, NOW(), $19
         FROM sources s
         LEFT JOIN brands b ON b.slug = $3
         LEFT JOIN models m ON m.slug = $4 AND m.brand_id = b.id
@@ -272,7 +272,11 @@ async def save_listing(conn: asyncpg.Connection, data: dict) -> str:
         LEFT JOIN drive_types dt ON dt.name = $13
         WHERE s.name = $1
         ON CONFLICT (source_id, external_id) DO UPDATE
-            SET last_seen_at = NOW(), is_active = TRUE
+            SET last_seen_at = NOW(),
+                is_active = TRUE,
+                -- Обновляем is_in_stock только если парсер прислал известное
+                -- значение (TRUE/FALSE). NULL не перезаписывает existing.
+                is_in_stock = COALESCE(EXCLUDED.is_in_stock, listings.is_in_stock)
         RETURNING id, (xmax = 0) AS is_new
         """,
         data["source"], data["external_id"],
@@ -283,6 +287,7 @@ async def save_listing(conn: asyncpg.Connection, data: dict) -> str:
         data.get("transmission"), data.get("drive_type"),
         data.get("color"), data.get("city"), data.get("region"),
         data.get("condition", "used"), data.get("listing_url"),
+        data.get("is_in_stock"),
     )
 
     if not row:
