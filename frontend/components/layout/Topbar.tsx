@@ -103,17 +103,36 @@ export default function Topbar() {
                         </span>
                     )}
 
-                    {fx && (
-                        <span className="ticker-item">
-                            <span className="ticker-label">USD/KZT</span>
-                            <span className="mono tnum">{fx.rate.toFixed(2)}</span>
-                            {fx.delta != null && (
-                                <span className={`mono ${fx.delta >= 0 ? 'up' : 'down'}`}>
-                                    {fx.delta >= 0 ? '▲' : '▼'} {Math.abs(fx.delta).toFixed(2)}%
-                                </span>
-                            )}
-                        </span>
-                    )}
+                    {fx && (() => {
+                        // Primary delta: prefer 1d если оно ≠ 0, иначе 7d (weekend
+                        // часто даёт 1d=0 потому что NBK не публикует по сб/вс).
+                        const primary = (fx.delta != null && Math.abs(fx.delta) >= 0.01)
+                            ? { value: fx.delta, label: '1д' }
+                            : (fx.delta7d != null
+                                ? { value: fx.delta7d, label: '7д' }
+                                : null);
+                        const tooltip = [
+                            fx.delta != null ? `1 день: ${fx.delta >= 0 ? '+' : ''}${fx.delta.toFixed(2)}%` : null,
+                            fx.delta7d != null ? `7 дней: ${fx.delta7d >= 0 ? '+' : ''}${fx.delta7d.toFixed(2)}%` : null,
+                            fx.delta30d != null ? `30 дней: ${fx.delta30d >= 0 ? '+' : ''}${fx.delta30d.toFixed(2)}%` : null,
+                            `Курс NBK на ${fx.updatedAt.toLocaleDateString('ru-RU')}`,
+                        ].filter(Boolean).join('\n');
+                        return (
+                            <span className="ticker-item" title={tooltip}>
+                                <span className="ticker-label">USD/KZT</span>
+                                <span className="mono tnum">{fx.rate.toFixed(2)}</span>
+                                {primary && (
+                                    <span className={`mono ${primary.value >= 0 ? 'up' : 'down'}`}>
+                                        {primary.value >= 0 ? '▲' : '▼'}{' '}
+                                        {Math.abs(primary.value).toFixed(2)}%
+                                        <span style={{ color: 'var(--text-muted)', marginLeft: 4, fontSize: 9 }}>
+                                            {primary.label}
+                                        </span>
+                                    </span>
+                                )}
+                            </span>
+                        );
+                    })()}
                 </div>
 
                 <button className="topbar-btn" type="button" aria-label="Поиск (не реализовано)">

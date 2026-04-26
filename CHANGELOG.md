@@ -62,6 +62,39 @@ UPDATE listings l SET model_id = NULL FROM models m
 
 ---
 
+## 2026-04-26 — USD/KZT ticker: реальные deltas из fx_history
+
+### Why
+Юзер заметил `USD/KZT 464.26 ▲ 0.00%` — фантомный 0%. Корень: старый `useUsdKzt` хук тянул rate с `open.er-api.com` и **считал delta через localStorage-snapshot**. Snapshot обновлялся раз в 24ч, и при первом fetch'е сегодняшнего дня `prev = current` → delta = 0. Также:
+1. Каждый юзер видел свой собственный delta (per-browser localStorage)
+2. open.er-api.com обновляется реже чем NBK
+3. **Не использовался наш `fx_history`** (который теперь daily из NBK через `fetch_fx.py`)
+
+### Added
+- **`GET /api/v1/analytics/fx-current`** — server-side computed deltas:
+  - `rate` + `rate_date` (свежайший NBK)
+  - `delta_1d_pct`, `delta_7d_pct`, `delta_30d_pct` — точные дельты из fx_history (forward-search on dates ≥N ago)
+  - bonus: `eur_kzt`, `rub_kzt`, `cny_kzt` для будущих UI
+
+### Changed
+- **`frontend/hooks/useUsdKzt.ts`** переписан: source = наш backend, не external API. Localstorage-логика удалена. Сохраняем тот же интерфейс (`rate, delta`), плюс `delta7d`, `delta30d`, `eurKzt`.
+- **`Topbar` ticker**: показывает primary delta = 1d (если ≠ 0) или 7d (если 1d = 0, типичный кейс на выходных). Subtitle с лейблом периода ('1д' или '7д'). Tooltip на hover показывает все три delta + дату NBK.
+
+### Validated
+```
+Current rate: 464.86 ₸ on 2026-04-26
+1d ago  (2026-04-25, выходные): 464.86 → +0.00%   ← по выходным NBK не обновляет
+7d ago  (2026-04-19): 469.52 → -0.99%
+30d ago (2026-03-27): 481.83 → -3.52%   ← тенге укрепился на 3.5% за месяц
+```
+Теперь когда 1d = 0%, ticker автоматически показывает 7d delta — реальное движение.
+
+### Удалено
+- `localStorage` snapshot logic в useUsdKzt
+- Зависимость от `open.er-api.com` (external API)
+
+---
+
 ## 2026-04-26 — Per-listing fair-price predictor (regression-based)
 
 ### Added

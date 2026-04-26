@@ -1313,6 +1313,55 @@ async def get_profit_ranking(
 # Прогноз цены — OLS regression on weekly median (PUBLIC)
 # =============================================================================
 
+@router.get("/fx-current", summary="Текущий курс USD/KZT с динамикой 1д/7д/30д")
+async def get_fx_current():
+    """
+    Возвращает свежайший курс USD/KZT из `fx_history` (NBK API daily) +
+    delta% за 1 день / 7 дней / 30 дней.
+
+    До этого endpoint'а frontend брал курс с open.er-api.com и считал
+    delta через localStorage-snapshot. Логика была ломучая (каждый юзер
+    видел свой delta, обнулялся при первом запуске). Server-side это
+    единый source of truth + точные daily deltas из официальных NBK
+    rates вместо external aggregator.
+    """
+    async with DBSession() as conn:
+        rates = await conn.fetch("""
+            SELECT rate_date, usd_kzt, eur_kzt, rub_kzt, cny_kzt
+            FROM fx_history
+            ORDER BY rate_date DESC
+            LIMIT 35
+        """)
+    if not rates:
+        return {"error": "no_fx_data"}
+
+    current = float(rates[0]["usd_kzt"])
+    current_date = rates[0]["rate_date"]
+
+    def _delta(target_days: int) -> float | None:
+        """Найти ближайшую запись ≥target_days назад, вернуть % разницу."""
+        for r in rates[1:]:
+            days_ago = (current_date - r["rate_date"]).days
+            if days_ago >= target_days:
+                prev = float(r["usd_kzt"])
+                if prev > 0:
+                    return round((current - prev) / prev * 100, 2)
+                return None
+        return None
+
+    return {
+        "rate": round(current, 2),
+        "rate_date": current_date.isoformat(),
+        "delta_1d_pct": _delta(1),
+        "delta_7d_pct": _delta(7),
+        "delta_30d_pct": _delta(30),
+        # Бонус: курсы других валют для будущих UI
+        "eur_kzt": round(float(rates[0]["eur_kzt"]), 2) if rates[0]["eur_kzt"] else None,
+        "rub_kzt": round(float(rates[0]["rub_kzt"]), 2) if rates[0]["rub_kzt"] else None,
+        "cny_kzt": round(float(rates[0]["cny_kzt"]), 2) if rates[0]["cny_kzt"] else None,
+    }
+
+
 @router.get("/forecast", summary="Прогноз медианной цены: OLS regression на недельных бакетах (с USD-нормализацией)")
 async def get_forecast(
     brand_id: int = Query(..., description="ID марки"),
