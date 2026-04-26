@@ -62,6 +62,44 @@ UPDATE listings l SET model_id = NULL FROM models m
 
 ---
 
+## 2026-04-26 — Real junk flags from kolesa search-фильтров
+
+### Why
+Прошлый junk-filter был эвристикой: title-keyword (ловил 6 listings — kolesa в title только "Brand Model Год г.") + price-outlier (median ± 50%-200%, ловит kolesa-junk через цену). Эвристика OK, но **не точна** — продавец вполне может поставить честную цену на битую машину, и она проскользнёт.
+
+Открытие через probe: kolesa.kz сам различает аварийные/не растаможенные через **search-фильтры**:
+- `?need-repair=1` → 3,428 listings (аварийные/не на ходу, ~2% всего рынка)
+- `?auto-custom=1` → 5,092 listings (не растаможенные, ~3%)
+
+172 + 255 = **427 страниц search-результатов** vs 53k detail-страниц — парсинг **15 минут вместо 5 часов**, и точность 100% (kolesa сам помечает).
+
+### Added
+- **Schema migration** — `listings` получил 3 колонки + 2 partial-индекса:
+  - `is_emergency BOOLEAN DEFAULT NULL`  (TRUE = аварийная/не на ходу)
+  - `is_customs_cleared BOOLEAN DEFAULT NULL`  (FALSE = не растаможен)
+  - `flags_updated_at TIMESTAMPTZ DEFAULT NULL`
+  - Partial indexes: `idx_listings_is_emergency WHERE is_emergency=TRUE`, `idx_listings_is_customs_cleared WHERE is_customs_cleared=FALSE` (только для "плохих" — экономия места).
+  Миграция применена ad-hoc на Neon.
+- **`parsers/kolesa/flags.py`** — новый модуль. Параллельно парсит оба фильтра (через `asyncio.gather`), собирает ID-сеты, делает 3-step UPDATE:
+  1. ВСЕ active kolesa-listings → `is_emergency=FALSE, is_customs_cleared=TRUE` (default-mark)
+  2. emergency-IDs → `is_emergency=TRUE`
+  3. not-cleared-IDs → `is_customs_cleared=FALSE`
+- **`.github/workflows/kolesa_flags.yml`** — cron каждые 8 часов (00:15 / 08:15 / 16:15 UTC), timeout 30 мин. Поскольку флаги меняются реже чем listings — частоты достаточно.
+
+### Changed
+- **`/profit-ranking`, `/price-boxplot`, `/market-overview`** в `analytics.py`: junk-filter теперь 3-слойный:
+  1. **Real DB flags**: `(l.is_emergency IS NULL OR l.is_emergency = FALSE) AND (l.is_customs_cleared IS NULL OR l.is_customs_cleared = TRUE)` — `IS NULL` пропускает (для не-kolesa и старых записей где flags ещё не заполнены)
+  2. **Title-keyword fallback** — для OLX/mycar/avtorynok где seller пишет "не на ходу" в title
+  3. **Price-outlier фильтр** (только в /profit-ranking) — median ± [50%, 200%] per group, как и раньше
+
+Все 3 слоя активируются `include_junk: bool = False` (default). Toggle "Товарные / Все" в UI работает с новой логикой без изменений.
+
+### Не покрыто
+- mycar/olx/avtorynok detail-flag parsing — у них нет аналогичных search-фильтров. Title-keyword + price-outlier остаются единственным способом.
+- Историческая корректировка для inactive listings — flags заполняются только для active. Для исторического анализа (toggle "Все") все old закрытые объявления по-прежнему фильтруются эвристикой.
+
+---
+
 ## 2026-04-26 — Long-tail city cleanup: +56 city normalizations
 
 ### Changed

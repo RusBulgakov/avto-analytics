@@ -343,6 +343,9 @@ async def market_overview(
     if not include_inactive:
         conditions.append("l.is_active = TRUE")
     if not include_junk:
+        # DB-flags (из parsers/kolesa/flags.py) + title-keyword fallback
+        conditions.append("(l.is_emergency IS NULL OR l.is_emergency = FALSE)")
+        conditions.append("(l.is_customs_cleared IS NULL OR l.is_customs_cleared = TRUE)")
         conditions.append("""l.title NOT ILIKE ALL(ARRAY[
             '%не на ходу%', '%аварий%', '%битая%', '%битый%',
             '%не растамож%', '%не растам%', '%без документ%',
@@ -423,7 +426,11 @@ async def get_price_boxplot(
     Возвращает min, Q1, median, Q3, max + count (совпадает с market-overview).
     """
     active_filter = "" if include_inactive else "AND l.is_active = TRUE"
+    # Junk-фильтр для /price-boxplot: DB-флаги (если parsers/kolesa/flags.py
+    # их заполнил) + title-keyword fallback для не-kolesa источников.
     junk_keyword_clause = "" if include_junk else """
+          AND (l.is_emergency IS NULL OR l.is_emergency = FALSE)
+          AND (l.is_customs_cleared IS NULL OR l.is_customs_cleared = TRUE)
           AND l.title NOT ILIKE ALL(ARRAY[
             '%не на ходу%', '%аварий%', '%битая%', '%битый%',
             '%не растамож%', '%не растам%', '%без документ%',
@@ -435,6 +442,8 @@ async def get_price_boxplot(
     if not include_inactive:
         conditions.append("l.is_active = TRUE")
     if not include_junk:
+        conditions.append("(l.is_emergency IS NULL OR l.is_emergency = FALSE)")
+        conditions.append("(l.is_customs_cleared IS NULL OR l.is_customs_cleared = TRUE)")
         conditions.append("""l.title NOT ILIKE ALL(ARRAY[
             '%не на ходу%', '%аварий%', '%битая%', '%битый%',
             '%не растамож%', '%не растам%', '%без документ%',
@@ -1075,11 +1084,15 @@ async def get_profit_ranking(
         params.append(year_to)
         year_filter += f" AND l.year <= ${len(params)}"
 
-    # Junk-фильтр: исключаем листинги, чьё title явно говорит "битая / на запчасти /
-    # не растаможен / аварийная". Sellers на OLX/mycar часто пишут это в title.
-    # На kolesa title чище (только "Brand Model Год г."), но фильтр безопасен — он
-    # просто не матчит kolesa-listings. Для kolesa работает price-outlier фильтр ниже.
+    # Junk-фильтр (3 слоя):
+    #   1. Real DB flags (kolesa: parsers/kolesa/flags.py заполняет is_emergency
+    #      и is_customs_cleared из ?need-repair=1 / ?auto-custom=1 search-фидов)
+    #   2. Title-keyword fallback — для OLX/mycar/avtorynok где seller пишет
+    #      "не на ходу" / "битая" в title
+    #   3. Price-outlier фильтр (median ± 50%-200%) — ниже в CTE
     junk_keyword_filter = "" if include_junk else """
+          AND (l.is_emergency IS NULL OR l.is_emergency = FALSE)
+          AND (l.is_customs_cleared IS NULL OR l.is_customs_cleared = TRUE)
           AND l.title NOT ILIKE ALL(ARRAY[
             '%не на ходу%', '%аварий%', '%битая%', '%битый%',
             '%не растамож%', '%не растам%', '%без документ%',

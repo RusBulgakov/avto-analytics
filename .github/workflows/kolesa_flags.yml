@@ -1,0 +1,43 @@
+name: Kolesa Flags (emergency / customs)
+
+# Парсит kolesa search-фильтры ?need-repair=1 и ?auto-custom=1, собирает
+# ID-листы "плохих" объявлений и массово помечает is_emergency / is_customs_cleared
+# в БД. Аналитические endpoints (/profit-ranking, /price-boxplot, /market-overview)
+# затем используют эти флаги вместо title-keyword + price-outlier эвристики.
+#
+# Зачем отдельный workflow: основной парсер (kolesa_full.yml) и так берёт
+# 191 фид × 2-3 часа на шард — флаги добавлять туда раздуло бы run-time.
+# Здесь ~430 страниц × ~1.5с задержка = ~12-15 минут, дешево и часто.
+
+on:
+  schedule:
+    - cron: '15 */8 * * *'  # каждые 8 часов: 00:15 / 08:15 / 16:15 UTC
+  workflow_dispatch:
+
+env:
+  PYTHONPATH: ${{ github.workspace }}
+
+jobs:
+  collect-flags:
+    name: Collect emergency + not-cleared IDs
+    runs-on: ubuntu-latest
+    timeout-minutes: 30  # типичный прогон 12-15 мин
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: parsers/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r parsers/requirements.txt
+
+      - name: Run kolesa flags collector
+        run: python -m parsers.kolesa.flags
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          KOLESA_FLAGS_MAX_PAGES: '300'
+          KOLESA_FLAGS_DELAY_MIN: '1.0'
+          KOLESA_FLAGS_DELAY_MAX: '2.5'
