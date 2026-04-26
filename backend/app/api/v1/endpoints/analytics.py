@@ -1207,3 +1207,160 @@ async def get_profit_ranking(
             "risk": risk,
         })
     return result
+
+
+# =============================================================================
+# Прогноз цены — OLS regression on weekly median (PUBLIC)
+# =============================================================================
+
+@router.get("/forecast", summary="Прогноз медианной цены: OLS regression на недельных бакетах")
+async def get_forecast(
+    brand_id: int = Query(..., description="ID марки"),
+    model_id: Optional[int] = Query(None, description="ID модели (опционально)"),
+    year: Optional[int] = Query(None, ge=1990, le=2030, description="Год выпуска (опционально)"),
+    history_days: int = Query(90, ge=28, le=365, description="Глубина истории для regression"),
+    horizon_days: int = Query(30, ge=7, le=120, description="На сколько дней вперёд прогнозировать"),
+    include_inactive: bool = Query(False, description="Учитывать снятые объявления в обучении"),
+    include_junk: bool = Query(
+        False,
+        description="Учитывать аварийные / не растаможенные. Default false — мы не хотим что junk портил тренд.",
+    ),
+):
+    """
+    Простая regression-based прогнозная модель цен.
+
+    Алгоритм:
+      1. Достаём price_history за `history_days` дней для (brand, model?, year?).
+         Junk-фильтр (is_emergency / is_customs_cleared / title-keyword)
+         применяется как везде — иначе wreck-цены ломают тренд.
+      2. Агрегируем по недельным бакетам: для каждой недели берём медиану цены.
+      3. OLS: price_median = a + b * week_index
+         (плюс residual std для confidence interval).
+      4. Прогноз на `horizon_days` (грубо округляется в недели):
+         forecast[t] = a + b * (last_week_idx + delta_t)
+         confidence = ±1.96 * residual_std (95% CI)
+
+    Возвращает:
+      - historical: точки прошедших недель (для фактической линии)
+      - forecast:   точки будущих недель (с CI)
+      - trend_pct_per_month: средний тренд в %/месяц
+      - r2: качество регрессии (доля объяснённой дисперсии)
+      - sample_size: число недель данных
+      - confidence: какую неопределённость закладываем (relative_std)
+    """
+    import math
+    from datetime import datetime, timedelta, timezone
+
+    conditions = [
+        "ph.recorded_at >= NOW() - ($1 * INTERVAL '1 day')",
+        "ph.price_kzt > 0",
+        "l.brand_id = $2",
+    ]
+    params: list = [history_days, brand_id]
+    i = 3
+
+    if model_id:
+        conditions.append(f"l.model_id = ${i}"); params.append(model_id); i += 1
+    if year:
+        conditions.append(f"l.year = ${i}"); params.append(year); i += 1
+    if not include_inactive:
+        conditions.append("l.is_active = TRUE")
+    if not include_junk:
+        conditions.append("(l.is_emergency IS NULL OR l.is_emergency = FALSE)")
+        conditions.append("(l.is_customs_cleared IS NULL OR l.is_customs_cleared = TRUE)")
+        conditions.append("""l.title NOT ILIKE ALL(ARRAY[
+            '%не на ходу%', '%аварий%', '%битая%', '%битый%',
+            '%не растамож%', '%не растам%', '%без документ%',
+            '%на запчасти%', '%по запчастям%', '%разбит%',
+            '%восстанов%', '%утоплен%', '%горел%'
+        ])""")
+
+    where = " AND ".join(conditions)
+    query = f"""
+        SELECT
+            DATE_TRUNC('week', ph.recorded_at) AS week_start,
+            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY ph.price_kzt)::bigint AS median_price,
+            COUNT(DISTINCT l.id)::int AS listing_count
+        FROM price_history ph
+        JOIN listings l ON l.id = ph.listing_id
+        WHERE {where}
+        GROUP BY DATE_TRUNC('week', ph.recorded_at)
+        ORDER BY week_start ASC
+    """
+
+    async with DBSession() as conn:
+        rows = await conn.fetch(query, *params)
+
+    points = [(r["week_start"], r["median_price"], r["listing_count"]) for r in rows]
+    n = len(points)
+
+    if n < 4:
+        return {
+            "historical": [
+                {"date": d.isoformat(), "median": int(p), "count": c}
+                for d, p, c in points
+            ],
+            "forecast": [],
+            "trend_pct_per_month": None,
+            "r2": None,
+            "sample_size": n,
+            "error": "Недостаточно данных для прогноза (минимум 4 недели)",
+        }
+
+    # OLS на индексах недель: y = a + b * x
+    xs = list(range(n))
+    ys = [float(p) for _, p, _ in points]
+    x_mean = sum(xs) / n
+    y_mean = sum(ys) / n
+    sxx = sum((x - x_mean) ** 2 for x in xs)
+    sxy = sum((xs[k] - x_mean) * (ys[k] - y_mean) for k in range(n))
+    if sxx == 0:
+        slope = 0.0
+    else:
+        slope = sxy / sxx
+    intercept = y_mean - slope * x_mean
+
+    # Residual std и R²
+    residuals = [ys[k] - (intercept + slope * xs[k]) for k in range(n)]
+    rss = sum(r * r for r in residuals)
+    tss = sum((y - y_mean) ** 2 for y in ys)
+    r2 = (1 - rss / tss) if tss > 0 else 0.0
+    # Sample std of residuals (с поправкой на 2 степени свободы — intercept + slope)
+    if n > 2:
+        residual_std = math.sqrt(rss / (n - 2))
+    else:
+        residual_std = math.sqrt(rss / n) if n else 0.0
+
+    # Тренд в %/месяц: slope*4_недели / mean_price
+    trend_pct_per_month = (slope * 4 / y_mean * 100) if y_mean else None
+
+    # Forecast — добавляем недели вперёд
+    horizon_weeks = max(1, math.ceil(horizon_days / 7))
+    last_week_start = points[-1][0]
+
+    historical = [
+        {"date": d.isoformat(), "median": int(p), "count": c}
+        for d, p, c in points
+    ]
+    forecast = []
+    for w in range(1, horizon_weeks + 1):
+        future_idx = (n - 1) + w
+        future_pred = intercept + slope * future_idx
+        future_date = last_week_start + timedelta(days=7 * w)
+        ci_half = 1.96 * residual_std  # 95% CI в чисто гомоскедастичной модели
+        forecast.append({
+            "date": future_date.isoformat(),
+            "median": int(max(0, future_pred)),
+            "low": int(max(0, future_pred - ci_half)),
+            "high": int(future_pred + ci_half),
+        })
+
+    return {
+        "historical": historical,
+        "forecast": forecast,
+        "trend_pct_per_month": round(trend_pct_per_month, 2) if trend_pct_per_month is not None else None,
+        "r2": round(r2, 3),
+        "residual_std_pct": round(residual_std / y_mean * 100, 2) if y_mean else None,
+        "sample_size": n,
+        "horizon_weeks": horizon_weeks,
+    }

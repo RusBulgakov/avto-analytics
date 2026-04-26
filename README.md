@@ -335,6 +335,7 @@ users / subscription_plans / user_subscriptions             — пользова
 | `GET` | `/api/v1/analytics/recent` | Лента свежих объявлений (live feed) |
 | `GET` | `/api/v1/analytics/geo` | Карта KZ: координаты городов + объявления и ср. цена |
 | `GET` | `/api/v1/analytics/price-candles` | Свечи цен по времени: P5/Q1/median/Q3/P95 в бакетах day/week/month. `granularity=auto` (default) → week для ≤90д, month для остального. |
+| `GET` | `/api/v1/analytics/forecast` | Прогноз медианной цены: OLS regression на недельных бакетах. Params: `brand_id` (обяз.), `model_id?`, `year?`, `history_days=90`, `horizon_days=30`. Returns `{historical, forecast, r2, trend_pct_per_month, sample_size}`. |
 
 ### Аналитика — детали объявления
 

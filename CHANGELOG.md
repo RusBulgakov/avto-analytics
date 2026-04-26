@@ -62,6 +62,45 @@ UPDATE listings l SET model_id = NULL FROM models m
 
 ---
 
+## 2026-04-26 — MVP Forecast: OLS regression на недельных медианах
+
+### Added
+- **`GET /api/v1/analytics/forecast`** — endpoint linear-regression прогноза цены. Параметры: `brand_id` (обяз.), `model_id`, `year`, `history_days` (default 90), `horizon_days` (default 30, до 120), `include_inactive`, `include_junk`. Возвращает: `{historical, forecast, trend_pct_per_month, r2, residual_std_pct, sample_size, horizon_weeks}`.
+- **`/forecast` страница** — переписана с placeholder'а на полноценную реализацию:
+  - Селекторы: марка → модель → год → горизонт прогноза (2н / 1м / 2м / 3м)
+  - 4 KPI: Тренд %/мес, R² качество, Шум (residual std %), Выборка (недель данных)
+  - График: фактическая медиана (синяя сплошная) + прогноз (жёлтая пунктирная) + 95% CI (полупрозрачная заливка)
+  - Метод-карточка: объяснение MVP-ограничений (нет сезонности, нет KZT/USD, нет смены поколений)
+
+### Algorithm
+1. Достаём `price_history` за `history_days` дней для выбранной (brand, model?, year?). Применяется тот же junk-filter что и в /profit-ranking — иначе wreck-цены (например, битый BMW 525 за 600k vs реальные 1.6M) ломают тренд.
+2. Группируем по неделям (`DATE_TRUNC('week', recorded_at)`) и берём медиану цены — стабильнее чем avg.
+3. **OLS** простой Python-арифметикой (без numpy/scipy в зависимостях):
+   ```python
+   slope = sum((x_i - x̄)(y_i - ȳ)) / sum((x_i - x̄)²)
+   intercept = ȳ - slope * x̄
+   ```
+4. Residuals → `residual_std = sqrt(RSS / (n-2))` для 95% CI = `±1.96 * residual_std`.
+5. R² = `1 - RSS/TSS`.
+6. Forecast: `y_future[w] = intercept + slope * (last_idx + w)` для каждой будущей недели.
+7. Trend %/мес = `slope * 4 / mean_price * 100`.
+
+### Validated на проде
+- **Toyota Camry 2017**: 8 недель, slope +251k ₸/нед, тренд **+10.0%/мес**, R² 0.18 (данные шумные — мало sample), forecast +4 нед = 11.92M ±2.79M (24% noise band).
+
+### MVP ограничения
+- Игнорирует сезонность (например, перед/после налоговых периодов)
+- Не учитывает курс KZT/USD (важен для премиум-сегмента)
+- Не различает поколения модели (T-Camry XV40 vs XV50 vs XV70 в одной "Camry")
+- Один линейный тренд — не ARIMA, не exponential smoothing
+- R² < 0.3 на многих группах — данных пока 8 недель macro, шум большой
+- Нет PRO-features: сигналы покупки, retro-test стратегии, календарь скидок
+
+### Зависимости
+Никаких новых — pure Python (`math.sqrt`), numpy/scipy не добавлены.
+
+---
+
 ## 2026-04-26 — Real junk flags from kolesa search-фильтров
 
 ### Why
