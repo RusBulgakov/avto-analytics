@@ -25,6 +25,7 @@ _pool: asyncpg.Pool | None = None
 # backend/app/api/v1/endpoints/analytics.py — каждый latin slug должен
 # иметь координаты.
 _CITY_NORMALIZATIONS = {
+    # 20 крупнейших городов (есть в _CITY_COORDS — отображаются на карте)
     'алматы': 'almaty', 'астана': 'astana', 'шымкент': 'shymkent',
     'караганда': 'karaganda', 'актобе': 'aktobe', 'актау': 'aktau',
     'костанай': 'kostanai', 'павлодар': 'pavlodar',
@@ -33,14 +34,53 @@ _CITY_NORMALIZATIONS = {
     'кокшетау': 'kokshetau', 'кызылорда': 'kyzylorda',
     'петропавловск': 'petropavlovsk', 'темиртау': 'temirtau',
     'туркестан': 'turkestan', 'экибастуз': 'ekibastuz',
+    # Средние города (есть в _CITY_COORDS)
     'жезказган': 'zhezkazgan', 'риддер': 'ridder', 'балхаш': 'balkhash',
     'кентау': 'kentau', 'жанаозен': 'zhanaozen', 'капчагай': 'kapchagay',
     'рудный': 'rudny', 'степногорск': 'stepnogorsk', 'арыс': 'arys',
     'арал': 'aral', 'аркалык': 'arkalyk', 'хромтау': 'khromtau',
     'жетысай': 'zhetisay', 'сатпаев': 'satpayev', 'аксу': 'aksu',
     'шу': 'shu',
-    # Старые алиасы которые kolesa возвращает
-    'semei': 'semey',  # парсер kolesa сейчас уже сам нормализует, но защита
+    # Long-tail — пригороды и райцентры. На карту не выводятся (нет в
+    # _CITY_COORDS), но slug-consistency для filters/aggregations.
+    # Алматинская область
+    'талгар': 'talgar', 'каскелен': 'kaskelen', 'есик': 'esik',
+    'жаркент': 'zharkent', 'текели': 'tekeli', 'уштобе': 'ushtobe',
+    'кордай': 'kordai', 'отеген': 'otegen', 'алмалыбак': 'almalybak',
+    'бесагаш': 'besagash', 'байтерек': 'bayterek',
+    # Конаев = переименованный Капчагай (с 2022)
+    'конаев': 'kapchagay', 'конаев (капшагай)': 'kapchagay',
+    'капшагай (конаев)': 'kapchagay', 'капшагай': 'kapchagay',
+    # Шымкентская область
+    'сарыагаш': 'saryagash', 'аксукент': 'aksukent', 'шиели': 'shieli',
+    'мерке': 'merke', 'арысь': 'arys',
+    # Атырауская / Мангистау
+    'кульсары': 'kulsary', 'бейнеу': 'beineu', 'балыкши': 'balykshi',
+    'еркинкала': 'erkinkala',
+    # Северный Казахстан
+    'щучинск': 'schuchinsk', 'булаево': 'bulayevo', 'бишкуль': 'bishkul',
+    'акколь': 'akkol', 'атбасар': 'atbasar', 'нура': 'nura',
+    'аягоз': 'ayagoz',
+    # Восточный Казахстан
+    'зыряновск': 'zyryanovsk', 'кокпекты': 'kokpekty',
+    'белоусовка': 'belousovka', 'прапорщиково': 'praporshchikovo',
+    # Западный Казахстан
+    'аксай': 'aksai', 'аральск': 'aralsk', 'жолбарыса калшораева': 'zholbarys',
+    # Костанайская область
+    'затобольск': 'zatobolsk', 'житикара': 'zhitikara',
+    # Прочие small towns (нормализуем для полной consistency)
+    'шахтинск': 'shakhtinsk', 'алга': 'alga', 'бектобе': 'bektobe',
+    'бесколь': 'beskol', 'белоярка': 'beloyarka', 'байтобе': 'baytobe',
+    'муткенова': 'mutkenova', 'чапаево': 'chapayevo',
+    'мичуринское': 'michurinskoye', 'нуркен': 'nurken',
+    'валиханово': 'valikhanovo', 'акбулак': 'akbulak',
+    'интернациональное': 'internatsionalnoye', 'сырдарья': 'syrdaria',
+    'балпык би': 'balpyk-bi', 'айдарлы': 'aydarly', 'алмалы': 'almaly',
+    'баянбай': 'bayanbay', 'байтерек': 'bayterek',
+    # Старые алиасы и kolesa-quirks
+    'semei': 'semey',
+    'kostanay': 'kostanai',  # альт-вариант slug
+    'oral': 'uralsk',        # казахское имя Уральска
 }
 
 
