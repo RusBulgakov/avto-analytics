@@ -1842,6 +1842,13 @@ async def get_backtest(
               -- (битые/typo'ы продавцов/срочные продажи). Был 0.30, но
               -- остаточные +200%-+300% margin показали что cap слишком мягкий.
               AND fp.first_price > gp.p25 * 0.50
+              -- ★ Flash-listing guard: listing должен наблюдаться парсером
+              -- минимум 2 раза с разрывом по времени. Иначе это teaser-цена
+              -- которая появилась-исчезла-вернулась как новый listing с
+              -- настоящей ценой (kolesa использует это как анти-спам). Real
+              -- example: external_id=216120352, Toyota Camry 2023 — first_seen
+              -- == last_seen, цена 1.6M, при том что на detail-page сейчас 16M.
+              AND l.last_seen_at > l.first_seen_at
         )
         SELECT
             COUNT(*)::int AS total_signals,
@@ -1949,6 +1956,10 @@ async def get_backtest(
               AND fp.first_price > gp.p25 * 0.50
               AND m.name NOT LIKE '(%'
               AND LOWER(m.name) <> LOWER(b.name)
+              -- ★ Flash-listing guard: парсер должен наблюдать listing
+              -- минимум 2 раза с разрывом по времени. Без этого теasers
+              -- проскакивают (Camry 2023 за 1.6M вместо реальных 16M).
+              AND l.last_seen_at > l.first_seen_at
               AND NOT l.is_active
               AND l.closed_at IS NOT NULL
               AND EXTRACT(EPOCH FROM (l.closed_at - l.first_seen_at)) / 86400.0 <= ${hold_idx}

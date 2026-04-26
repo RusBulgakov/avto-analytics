@@ -62,6 +62,37 @@ UPDATE listings l SET model_id = NULL FROM models m
 
 ---
 
+## 2026-04-26 — Backtest: filter flash-listings (teaser prices)
+
+### Why
+Юзер: "https://kolesa.kz/a/show/216120352 — цена Купил 1.6 млн, а на страничке 16 млн".
+
+Investigation:
+- Detail-page kolesa: `unitPrice: "16000000"` (16 млн) — реальная цена сейчас
+- Наша БД: 1,600,000 ₸ (1.6 млн) — единственная запись price_history от 5 апреля 04:19
+- `last_seen_at == first_seen_at` (та же секунда) — парсер видел listing **один раз**
+
+Это **не 10x bug** в нашем парсере. Это **teaser-поведение продавцов**: 5 апреля seller выставил 1.6M (привлечь клики / typo / placeholder), листинг исчез из feed (kolesa модерация / seller edit), потом kolesa либо заново публикует с правильной ценой, либо seller возвращает с 16M. Парсер записал то что увидел в свой единственный визит.
+
+Похожие patterns в БД (96 случаев из 22k Toyota):
+- `555,555` / `177,777` / `144,444` — round-typo "красивые числа"
+- `100,000 / 200,000 / 1,000,000` — placeholder при создании
+- Toyota Land Cruiser 2005 за 1.0M (медиана 11.8M) — явный teaser
+
+### Added
+- **Flash-listing filter в `/backtest`**: SQL guard `AND l.last_seen_at > l.first_seen_at`. Парсер должен наблюдать listing **минимум 2 раза с разрывом по времени** — иначе не доверяем цене. Применено в обоих SQL-блоках (signals CTE + top_query).
+
+### Validated
+- **34% всех listings (101,616 / 297,869)** — flash (last_seen == first_seen). Эти исключены из backtest.
+- Top-10 теперь чистый: ушли все listings с подозрительно низкой entry_price которые были видны парсером один раз. Все оставшиеся имеют последовательную price_history (минимум 2+ observation).
+
+### Не покрыто
+- **/listing page** для inactive listings показывает stale snapshot. Идеальный fix — re-fetch detail-page при показе. Сейчас не делаем (extra HTTP cost). Альтернатива: показать disclaimer "Цена на момент последнего парсинга от {date}, может быть устаревшей".
+- **price_history** для flash-listings уже создан. Делать retroactive cleanup → рискованно (можем удалить честные real-quick-sale кейсы). Filter at read-time = безопасно.
+- **Парсер не возвращается к flash-listings** — это behavior kolesa (вытесняет из feed). Чтобы поймать второй observation для flash, нужен alive_check pass (parsers/kolesa/alive_check.py) — он уже работает каждые 6 часов и помечает как alive. Но not для price update.
+
+---
+
 ## 2026-04-26 — Backtest: честное название колонки + market_movement metric
 
 ### Why
