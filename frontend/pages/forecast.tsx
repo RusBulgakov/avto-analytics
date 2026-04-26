@@ -44,6 +44,24 @@ interface ForecastResp {
     error?: string;
 }
 
+interface BacktestResp {
+    params: { period_days: number; discount_threshold: number; hold_days: number };
+    total_signals: number;
+    hits: number;
+    misses: number;
+    win_rate: number | null;
+    avg_signal_discount: number | null;
+    avg_realized_margin: number | null;
+    median_realized_margin: number | null;
+    median_days_to_sell: number | null;
+    top_winners: {
+        brand: string; model: string; year: number;
+        buy_price: number; sell_price: number;
+        margin: number; days: number; url: string;
+    }[];
+    error?: string;
+}
+
 const CURRENT_YEAR = new Date().getFullYear();
 const HORIZON_OPTIONS = [
     { id: 14,  label: '2 нед' },
@@ -113,6 +131,20 @@ export default function ForecastPage() {
             ...(yearTo ? { year_to: yearTo } : {}),
             horizon_days: horizonDays,
             history_days: 90,
+        }),
+        { keepPreviousData: true }
+    );
+
+    const { data: backtest, isLoading: backtestLoading } = useSWR<BacktestResp>(
+        brandId ? ['backtest', brandId, modelId, yearFrom, yearTo] : null,
+        () => analyticsApi.getBacktest({
+            ...(brandId ? { brand_id: brandId } : {}),
+            ...(modelId ? { model_id: modelId } : {}),
+            ...(yearFrom ? { year_from: yearFrom } : {}),
+            ...(yearTo ? { year_to: yearTo } : {}),
+            period_days: 60,
+            discount_threshold: 0.15,
+            hold_days: 45,
         }),
         { keepPreviousData: true }
     );
@@ -412,18 +444,147 @@ export default function ForecastPage() {
                             </div>
                         </section>
 
+                        {/* === BACKTEST SECTION === */}
+                        {brandId && backtest && !backtest.error && backtest.total_signals > 0 && (
+                            <section className="card" style={{ marginTop: 14 }}>
+                                <div className="card-h">
+                                    <div>
+                                        <div className="card-title">Ретро-тест стратегии «купить дешевое»</div>
+                                        <div className="card-sub">
+                                            период 60 дней · discount −15% от p25 группы · holding window 45 дней
+                                        </div>
+                                    </div>
+                                    <Badge variant="accent">MVP</Badge>
+                                </div>
+                                <div className="card-b">
+                                    {/* KPI row */}
+                                    <div
+                                        style={{
+                                            display: 'grid',
+                                            gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+                                            gap: 1,
+                                            background: 'var(--border)',
+                                            border: '1px solid var(--border)',
+                                            borderRadius: 'var(--radius)',
+                                            overflow: 'hidden',
+                                            marginBottom: 14,
+                                        }}
+                                    >
+                                        <div className="kpi" style={{ minHeight: 88 }}>
+                                            <div className="uppercase" style={{ fontSize: 11, color: 'var(--text-muted)' }}>Сигналы</div>
+                                            <div style={{ fontSize: 22, fontWeight: 600, fontFamily: 'var(--display)', marginTop: 4 }}>
+                                                {fmt.int(backtest.total_signals)}
+                                            </div>
+                                            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>buy-сигналов за 60д</div>
+                                        </div>
+                                        <div className="kpi" style={{ minHeight: 88 }}>
+                                            <div className="uppercase" style={{ fontSize: 11, color: 'var(--text-muted)' }}>Win rate</div>
+                                            <div
+                                                style={{
+                                                    fontSize: 22, fontWeight: 600, fontFamily: 'var(--display)', marginTop: 4,
+                                                    color: backtest.win_rate != null && backtest.win_rate >= 0.6 ? 'var(--up)' : 'var(--text)',
+                                                }}
+                                            >
+                                                {backtest.win_rate != null ? `${(backtest.win_rate * 100).toFixed(0)}%` : '—'}
+                                            </div>
+                                            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{backtest.hits}/{backtest.total_signals} закрылись</div>
+                                        </div>
+                                        <div className="kpi" style={{ minHeight: 88 }}>
+                                            <div className="uppercase" style={{ fontSize: 11, color: 'var(--text-muted)' }}>Avg margin</div>
+                                            <div
+                                                style={{
+                                                    fontSize: 22, fontWeight: 600, fontFamily: 'var(--display)', marginTop: 4,
+                                                    color: backtest.avg_realized_margin != null && backtest.avg_realized_margin > 0
+                                                        ? 'var(--up)' : backtest.avg_realized_margin != null && backtest.avg_realized_margin < 0
+                                                        ? 'var(--down)' : 'var(--text)',
+                                                }}
+                                            >
+                                                {backtest.avg_realized_margin != null
+                                                    ? `${backtest.avg_realized_margin > 0 ? '+' : ''}${(backtest.avg_realized_margin * 100).toFixed(2)}%`
+                                                    : '—'}
+                                            </div>
+                                            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>last vs first price</div>
+                                        </div>
+                                        <div className="kpi" style={{ minHeight: 88 }}>
+                                            <div className="uppercase" style={{ fontSize: 11, color: 'var(--text-muted)' }}>Median days</div>
+                                            <div style={{ fontSize: 22, fontWeight: 600, fontFamily: 'var(--display)', marginTop: 4 }}>
+                                                {backtest.median_days_to_sell != null ? backtest.median_days_to_sell.toFixed(0) : '—'}
+                                            </div>
+                                            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>дней до закрытия</div>
+                                        </div>
+                                    </div>
+
+                                    {/* Top winners */}
+                                    {backtest.top_winners.length > 0 ? (
+                                        <>
+                                            <div className="uppercase" style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+                                                топ-{backtest.top_winners.length} успешных сделок
+                                            </div>
+                                            <table className="tbl">
+                                                <thead>
+                                                    <tr>
+                                                        <th>Авто</th>
+                                                        <th className="right">Купил</th>
+                                                        <th className="right">Продал</th>
+                                                        <th className="right">Маржа</th>
+                                                        <th className="right">Дней</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {backtest.top_winners.map((w, i) => (
+                                                        <tr key={i}>
+                                                            <td>
+                                                                <a href={w.url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--info)' }}>
+                                                                    <strong>{w.brand}</strong>{' '}
+                                                                    <span className="dim">{w.model}</span>{' '}
+                                                                    <span className="mono dim">{w.year}</span>
+                                                                </a>
+                                                            </td>
+                                                            <td className="num">{fmt.price(w.buy_price)}</td>
+                                                            <td className="num">{fmt.price(w.sell_price)}</td>
+                                                            <td className="num">
+                                                                <Badge variant={w.margin > 0.05 ? 'up' : w.margin > 0 ? 'accent' : 'neutral'}>
+                                                                    {w.margin > 0 ? '+' : ''}{(w.margin * 100).toFixed(1)}%
+                                                                </Badge>
+                                                            </td>
+                                                            <td className="num">{w.days.toFixed(0)}д</td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </>
+                                    ) : (
+                                        <div style={{ padding: 12, color: 'var(--text-muted)', fontSize: 12 }}>
+                                            Нет успешно-закрывшихся сделок в выборке.
+                                        </div>
+                                    )}
+                                </div>
+                            </section>
+                        )}
+
+                        {brandId && !backtestLoading && backtest?.error && (
+                            <div
+                                className="card"
+                                style={{ marginTop: 14, padding: 14, color: 'var(--text-muted)', fontSize: 13 }}
+                            >
+                                Backtest: {backtest.error}
+                            </div>
+                        )}
+
                         <div
                             className="card"
                             style={{ marginTop: 14, padding: 14, fontSize: 12, color: 'var(--text-2)' }}
                         >
                             <div className="uppercase" style={{ color: 'var(--text-muted)', marginBottom: 6, fontSize: 11 }}>
-                                методология MVP
+                                методология
                             </div>
                             <div>
-                                Простая <strong>OLS regression</strong> на недельных медианах цены за последние 90 дней.
-                                Не учитывает сезонность, курс KZT/USD, выпуск новых поколений — это запланировано в следующих итерациях.
-                                R² ниже 0.3 значит данные шумные для линейной модели — попробуйте сузить группу (конкретный год / модель).
-                                Junk-листинги (битые / не растаможенные / не на ходу) автоматически исключены.
+                                <strong>Forecast V2</strong> — OLS regression на двух осях: KZT и USD. Курс берётся из <code>fx_history</code> (NBK API daily).
+                                FX-вклад показывает сколько из тренда KZT-цен объясняется движением тенге, а сколько — реальным движением рынка.
+                                <br />
+                                <strong>Backtest</strong> — стратегия «купить листинг чья first_price на 15% ниже p25 группы (brand/model/year/неделя), продать в течение 45 дней». Margin = (last_price - first_price) / first_price. Это approximation — реальная цена сделки может быть ниже на 1-3% (торг). Junk-листинги (битые / не растаможенные) исключены из обеих метрик.
+                                <br />
+                                R² ниже 0.3 = данные шумные → попробуйте сузить группу (конкретный год / модель).
                             </div>
                         </div>
                     </div>

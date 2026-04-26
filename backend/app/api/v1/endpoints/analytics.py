@@ -1422,3 +1422,249 @@ async def get_forecast(
         "horizon_weeks": horizon_weeks,
         "current_fx_rate": round(last_fx_rate, 2),
     }
+
+
+# =============================================================================
+# Backtest торговой стратегии "Cheap-to-fair" (PUBLIC)
+# =============================================================================
+
+@router.get("/backtest", summary="Ретро-тест стратегии перепродажи")
+async def get_backtest(
+    brand_id: Optional[int] = Query(None, description="Опциональный фильтр по марке"),
+    model_id: Optional[int] = Query(None),
+    year_from: Optional[int] = Query(None, ge=1990, le=2030),
+    year_to: Optional[int] = Query(None, ge=1990, le=2030),
+    period_days: int = Query(60, ge=14, le=365, description="Глубина истории для backtest"),
+    discount_threshold: float = Query(
+        0.15, ge=0.05, le=0.50,
+        description="Минимальный дисконт от p25 группы для buy signal (0.15 = -15%)",
+    ),
+    hold_days: int = Query(45, ge=7, le=180, description="Окно для удержания позиции"),
+    include_junk: bool = Query(False, description="Учитывать аварийные/не растаможенные"),
+):
+    """
+    Ретро-тест стратегии "купить дешевле p25, продать через hold_days":
+
+    1. Для каждого активно-парсимого периода-недели берём `first_price` каждого
+       листинга (первая запись price_history) и считаем `p25` цены группы
+       (brand+model+year) за ту же неделю.
+    2. **Buy signal** = листинг чья first_price < p25 × (1 - discount_threshold).
+       Это объявления заметно дешевле нижнего квартиля своей группы — кандидаты
+       на перепродажу по более рыночной цене.
+    3. Tracker: для каждого signal'а смотрим closed_at:
+       - **Hit** — listing закрылся внутри hold_days. realized margin =
+         (last_price / first_price - 1) — но это не идеальный proxy, т.к. мы
+         не наблюдаем фактическую сделку. Используем как approximation.
+       - **Miss** — listing всё ещё active или закрыт после hold_days
+         (стратегия не сработала за окно).
+    4. Aggregate: win rate, avg/median realized margin, sample size.
+
+    Caveats:
+      - История у нас ~60 дней, поэтому достоверный backtest требует периода
+        не больше period_days = 30-45.
+      - "Sold price" — последняя видимая цена перед closed_at. Реальная цена
+        продажи может быть на 1-3% ниже (торг). Это смещает результат вниз.
+      - Игнорируется liquidity: если мы покупали 100 машин в неделю, цена
+        бы менялась под нас. Backtest предполагает price-taker.
+    """
+    import math
+
+    base_conditions = [
+        "l.first_seen_at >= NOW() - ($1 * INTERVAL '1 day')",
+        "l.year IS NOT NULL",
+    ]
+    params: list = [period_days]
+    i = 2
+
+    if brand_id:
+        base_conditions.append(f"l.brand_id = ${i}"); params.append(brand_id); i += 1
+    if model_id:
+        base_conditions.append(f"l.model_id = ${i}"); params.append(model_id); i += 1
+    if year_from:
+        base_conditions.append(f"l.year >= ${i}"); params.append(year_from); i += 1
+    if year_to:
+        base_conditions.append(f"l.year <= ${i}"); params.append(year_to); i += 1
+    if not include_junk:
+        base_conditions.append("(l.is_emergency IS NULL OR l.is_emergency = FALSE)")
+        base_conditions.append("(l.is_customs_cleared IS NULL OR l.is_customs_cleared = TRUE)")
+
+    base_where = " AND ".join(base_conditions)
+
+    # discount + hold идут параметрами в SQL
+    params.append(1.0 - discount_threshold)  # buy_threshold (e.g. 0.85)
+    bt_idx = i; i += 1
+    params.append(hold_days)
+    hold_idx = i; i += 1
+
+    query = f"""
+        WITH first_prices AS (
+            SELECT DISTINCT ON (listing_id)
+                   listing_id, price_kzt::numeric AS first_price, recorded_at
+            FROM price_history
+            ORDER BY listing_id, recorded_at ASC
+        ),
+        last_prices AS (
+            SELECT DISTINCT ON (listing_id)
+                   listing_id, price_kzt::numeric AS last_price
+            FROM price_history
+            ORDER BY listing_id, recorded_at DESC
+        ),
+        group_p25 AS (
+            SELECT DATE_TRUNC('week', l.first_seen_at) AS week,
+                   l.brand_id, l.model_id, l.year,
+                   PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY fp.first_price)::numeric AS p25,
+                   COUNT(*) AS group_size
+            FROM listings l
+            JOIN first_prices fp ON fp.listing_id = l.id
+            WHERE {base_where}
+            GROUP BY 1, 2, 3, 4
+            HAVING COUNT(*) >= 5  -- минимум 5 listings в группе для стат-надёжного p25
+        ),
+        signals AS (
+            SELECT l.id,
+                   l.first_seen_at,
+                   l.closed_at,
+                   l.is_active,
+                   fp.first_price,
+                   lp.last_price,
+                   gp.p25,
+                   (fp.first_price / NULLIF(gp.p25, 0)) AS price_ratio,
+                   EXTRACT(EPOCH FROM (COALESCE(l.closed_at, NOW()) - l.first_seen_at)) / 86400.0 AS days_held
+            FROM listings l
+            JOIN first_prices fp ON fp.listing_id = l.id
+            JOIN last_prices lp ON lp.listing_id = l.id
+            JOIN group_p25 gp
+              ON gp.brand_id = l.brand_id
+             AND gp.model_id = l.model_id
+             AND gp.year = l.year
+             AND gp.week = DATE_TRUNC('week', l.first_seen_at)
+            WHERE {base_where}
+              AND fp.first_price < gp.p25 * ${bt_idx}
+              AND fp.first_price > 0
+        )
+        SELECT
+            COUNT(*)::int AS total_signals,
+            COUNT(*) FILTER (
+              WHERE NOT is_active
+                AND closed_at IS NOT NULL
+                AND days_held <= ${hold_idx}
+            )::int AS hits,
+            COUNT(*) FILTER (
+              WHERE is_active OR (closed_at IS NOT NULL AND days_held > ${hold_idx})
+            )::int AS misses,
+            AVG(price_ratio)::numeric(8, 4) AS avg_signal_discount,
+            -- realized margin рассчитываем только для hits
+            AVG(
+                CASE
+                  WHEN NOT is_active AND closed_at IS NOT NULL AND days_held <= ${hold_idx}
+                    THEN (last_price / NULLIF(first_price, 0) - 1)
+                END
+            )::numeric(8, 4) AS avg_realized_margin,
+            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY
+                CASE
+                  WHEN NOT is_active AND closed_at IS NOT NULL AND days_held <= ${hold_idx}
+                    THEN (last_price / NULLIF(first_price, 0) - 1)
+                END
+            )::numeric(8, 4) AS median_realized_margin,
+            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY days_held)
+              FILTER (WHERE NOT is_active AND closed_at IS NOT NULL)::numeric(6, 1) AS median_days_to_sell
+        FROM signals
+    """
+
+    async with DBSession() as conn:
+        row = await conn.fetchrow(query, *params)
+
+        # Sample top N hits (для UI как "примеры успешных сделок")
+        top_query = f"""
+            WITH first_prices AS (
+                SELECT DISTINCT ON (listing_id) listing_id, price_kzt::numeric AS first_price
+                FROM price_history ORDER BY listing_id, recorded_at ASC
+            ),
+            last_prices AS (
+                SELECT DISTINCT ON (listing_id) listing_id, price_kzt::numeric AS last_price
+                FROM price_history ORDER BY listing_id, recorded_at DESC
+            ),
+            group_p25 AS (
+                SELECT DATE_TRUNC('week', l.first_seen_at) AS week,
+                       l.brand_id, l.model_id, l.year,
+                       PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY fp.first_price)::numeric AS p25
+                FROM listings l
+                JOIN first_prices fp ON fp.listing_id = l.id
+                WHERE {base_where}
+                GROUP BY 1, 2, 3, 4
+                HAVING COUNT(*) >= 5
+            )
+            SELECT b.name AS brand, m.name AS model, l.year,
+                   fp.first_price::bigint AS buy, lp.last_price::bigint AS sell,
+                   (lp.last_price / NULLIF(fp.first_price, 0) - 1)::numeric(8, 4) AS margin,
+                   EXTRACT(EPOCH FROM (l.closed_at - l.first_seen_at)) / 86400.0 AS days,
+                   l.listing_url
+            FROM listings l
+            JOIN first_prices fp ON fp.listing_id = l.id
+            JOIN last_prices lp ON lp.listing_id = l.id
+            JOIN brands b ON b.id = l.brand_id
+            JOIN models m ON m.id = l.model_id
+            JOIN group_p25 gp ON gp.brand_id = l.brand_id AND gp.model_id = l.model_id
+                             AND gp.year = l.year
+                             AND gp.week = DATE_TRUNC('week', l.first_seen_at)
+            WHERE {base_where}
+              AND fp.first_price < gp.p25 * ${bt_idx}
+              AND fp.first_price > 0
+              AND NOT l.is_active
+              AND l.closed_at IS NOT NULL
+              AND EXTRACT(EPOCH FROM (l.closed_at - l.first_seen_at)) / 86400.0 <= ${hold_idx}
+            ORDER BY margin DESC NULLS LAST
+            LIMIT 10
+        """
+        top_rows = await conn.fetch(top_query, *params)
+
+    if not row or row["total_signals"] == 0:
+        return {
+            "params": {
+                "period_days": period_days,
+                "discount_threshold": discount_threshold,
+                "hold_days": hold_days,
+            },
+            "total_signals": 0,
+            "hits": 0,
+            "misses": 0,
+            "win_rate": None,
+            "avg_realized_margin": None,
+            "median_realized_margin": None,
+            "median_days_to_sell": None,
+            "top_winners": [],
+            "error": "Сигналов не найдено в выбранной выборке",
+        }
+
+    total = row["total_signals"]
+    hits = row["hits"] or 0
+    misses = row["misses"] or 0
+
+    return {
+        "params": {
+            "period_days": period_days,
+            "discount_threshold": discount_threshold,
+            "hold_days": hold_days,
+        },
+        "total_signals": total,
+        "hits": hits,
+        "misses": misses,
+        "win_rate": round(hits / total, 3) if total else None,
+        "avg_signal_discount": float(row["avg_signal_discount"]) if row["avg_signal_discount"] else None,
+        "avg_realized_margin": float(row["avg_realized_margin"]) if row["avg_realized_margin"] is not None else None,
+        "median_realized_margin": float(row["median_realized_margin"]) if row["median_realized_margin"] is not None else None,
+        "median_days_to_sell": float(row["median_days_to_sell"]) if row["median_days_to_sell"] is not None else None,
+        "top_winners": [
+            {
+                "brand": r["brand"],
+                "model": r["model"],
+                "year": r["year"],
+                "buy_price": int(r["buy"]),
+                "sell_price": int(r["sell"]),
+                "margin": float(r["margin"]),
+                "days": float(r["days"]),
+                "url": r["listing_url"],
+            }
+            for r in top_rows
+        ],
+    }

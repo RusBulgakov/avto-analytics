@@ -62,6 +62,58 @@ UPDATE listings l SET model_id = NULL FROM models m
 
 ---
 
+## 2026-04-26 — Forecast V2 + Backtest стратегии перепродажи
+
+### Added
+- **`fx_history` table** — daily USD/EUR/RUB/CNY → KZT курсы от National Bank of KZ. Backfill 90 дней ad-hoc, далее `parsers/common/fetch_fx.py` daily через `.github/workflows/fetch_fx.yml` (06:00 UTC).
+- **`/forecast` V2** — multivariate-style regression:
+  - Per-row LATERAL JOIN с `fx_history` (forward-fill для weekend/holiday)
+  - Считаем 2 параллельных OLS: на median_kzt и median_usd (price_kzt / fx_rate)
+  - Возвращаем оба тренда + `fx_impact_pct = kzt - usd` (вклад движения тенге)
+  - Forecast curve в KZT = USD-прогноз × current_rate (отделяет market-движение от FX-шума)
+  - Новые params: `year_from`, `year_to` (для поколений типа Camry XV50 = 2014-2018)
+- **`/backtest` endpoint** — ретро-тест стратегии "купить дешевле p25, продать в течение 45 дней":
+  - Buy signal: `first_price < group_p25 * (1 - discount_threshold)` (default 15%)
+  - Hit: `closed_at within hold_days` (default 45)
+  - Aggregate: total_signals, hits, misses, win_rate, avg/median_realized_margin, median_days_to_sell
+  - + Top-10 winners (top realized margin, with listing URLs)
+  - Junk-фильтр applied (битые / не растаможенные не попадают в signals).
+- **`/forecast` page**:
+  - 5 KPI tiles (вместо 4): Тренд KZT, Тренд USD, FX вклад (с пояснением "тенге слабеет/крепнет"), R² (USD), Выборка (с current_fx_rate)
+  - Year selector split: "Год от" + "Год до" (для поколений)
+  - Новая секция "Ретро-тест стратегии перепродажи" с 4 KPI (Сигналы, Win rate, Avg margin, Median days) + таблица топ-10 успешных сделок с маржой и днями держания
+
+### Validated на проде
+
+**Forecast V2 — Toyota Camry 2017 (8 weeks):**
+```
+KZT trend  +4.58%/мес  R² 0.04  ← наблюдаемая динамика
+USD trend  +8.49%/мес  R² 0.14  ← истинный тренд цены (без FX)
+FX impact  -3.91%/мес              ← тенге укрепляется и СКРЫВАЕТ USD-рост
+```
+Без USD-нормализации этот сигнал не виден — пользователь думает рынок растёт на 4.5%, реально цены идут вверх на 8.5% (а тенге компенсирует).
+
+**Backtest — Toyota Camry за 60 дней (-15% от p25, hold 45д):**
+```
+total_signals: 1,782
+hits (sold ≤45д): 1,482
+win_rate: 83.2%
+avg_realized_margin: +0.29%
+median_realized_margin: +0.00%
+median_days_to_sell: 7
+```
+Insight: сигналы быстро закрываются (7 дней median), но **margin почти ноль**. Продавцы выставляют fair-цену сразу и она не двигается до закрытия. Strategy "купи-подожди-продай" в коротком окне не приносит маржу — нужно сравнивать с **текущим p25 группы на момент продажи**, не с ценой того же листинга. Это V2 backtest для следующей итерации.
+
+### Зависимости
+Никаких новых — pure Python.
+
+### Что не сделано (для следующего раунда)
+- Backtest V2: сравнивать sell-price с **текущим** p25 группы на момент закрытия (а не last_price того же листинга)
+- Forecast: добавить mileage_km как третий фактор regression (сейчас игнорируется)
+- Сезонность: holiday calendar / tax periods как dummy variables
+
+---
+
 ## 2026-04-26 — MVP Forecast: OLS regression на недельных медианах
 
 ### Added

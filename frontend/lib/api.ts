@@ -33,6 +33,7 @@ export const analyticsApi = {
     getPriceHistory: (params: Record<string, unknown>) => api.get('/api/v1/analytics/price-history', { params }).then((r: any) => r.data),
     getPriceCandles: (params: Record<string, unknown>) => api.get('/api/v1/analytics/price-candles', { params }).then((r: any) => r.data),
     getForecast: (params: Record<string, unknown>) => api.get('/api/v1/analytics/forecast', { params }).then((r: any) => r.data),
+    getBacktest: (params: Record<string, unknown>) => api.get('/api/v1/analytics/backtest', { params }).then((r: any) => r.data),
     getMarketOverview: (params?: Record<string, unknown>) => api.get('/api/v1/analytics/market-overview', { params }).then((r: any) => r.data),
     getProfitability: (params: Record<string, unknown>) => api.get('/api/v1/analytics/profitability', { params }).then((r: any) => r.data),
     getPriceBoxplot: (params?: Record<string, unknown>) => api.get('/api/v1/analytics/price-boxplot', { params }).then((r: any) => r.data),
