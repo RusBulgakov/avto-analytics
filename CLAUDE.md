@@ -87,6 +87,7 @@
 1. **Absolute paths** — при правке файлов ВСЕГДА используй абсолютные пути.
 2. **Read перед Edit** — сначала прочитай файл, потом редактируй (иначе Edit-tool откажет).
 3. **Никаких секретов в репо** — `.env`, пароли, токены только в GitHub Secrets / Render env.
+4. **Bulk SQL миграции — обязательный dry-run.** При массовом `UPDATE listings SET city = …` (или любая другая нормализация существующих данных) сначала вывести `old → new` для всех distinct values, посмотреть глазами, **только потом** делать UPDATE. Особенно осторожно с regex'ами: `\s*-\s*` без обязательных пробелов вокруг дефиса однажды испортил 18,481 `ust-kamenogorsk` → `ust`.
 4. **Frontend static export** — ни один endpoint на фронте не должен требовать SSR. Все dynamic routes через query-string (`/listing?id=...`) или ISR-совместимый механизм.
 5. **Rate-limit парсеров** — любой новый парсер обязан иметь: random delay между запросами (≥1 сек), UA-ротацию (см. `parsers/common/http_client.py::USER_AGENTS`), retry на 429/5xx с экспоненциальной задержкой.
 6. **CORS:** при добавлении нового frontend-домена не забудь `BACKEND_CORS_ORIGINS` в Render-env бэка.

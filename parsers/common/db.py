@@ -7,14 +7,62 @@ common/db.py
   2. POSTGRES_HOST/USER/PASSWORD/DB (Docker) — обратная совместимость
 """
 import os
+import re
 import ssl as _ssl
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import AsyncIterator, Optional
 from urllib.parse import urlparse, parse_qs
 
 import asyncpg
 
 _pool: asyncpg.Pool | None = None
+
+
+# Cyrillic city names → latin slug. Парсеры (особенно OLX/mycar) часто
+# сохраняют город в кириллице ("Алматы"), а frontend/geo endpoint матчит
+# по slug'у ("almaty"). Без нормализации здесь ~1500 listings выпадают
+# с карты. Этот набор должен быть синхронизирован с _CITY_COORDS в
+# backend/app/api/v1/endpoints/analytics.py — каждый latin slug должен
+# иметь координаты.
+_CITY_NORMALIZATIONS = {
+    'алматы': 'almaty', 'астана': 'astana', 'шымкент': 'shymkent',
+    'караганда': 'karaganda', 'актобе': 'aktobe', 'актау': 'aktau',
+    'костанай': 'kostanai', 'павлодар': 'pavlodar',
+    'талдыкорган': 'taldykorgan', 'уральск': 'uralsk', 'атырау': 'atyrau',
+    'тараз': 'taraz', 'усть-каменогорск': 'ust-kamenogorsk', 'семей': 'semey',
+    'кокшетау': 'kokshetau', 'кызылорда': 'kyzylorda',
+    'петропавловск': 'petropavlovsk', 'темиртау': 'temirtau',
+    'туркестан': 'turkestan', 'экибастуз': 'ekibastuz',
+    'жезказган': 'zhezkazgan', 'риддер': 'ridder', 'балхаш': 'balkhash',
+    'кентау': 'kentau', 'жанаозен': 'zhanaozen', 'капчагай': 'kapchagay',
+    'рудный': 'rudny', 'степногорск': 'stepnogorsk', 'арыс': 'arys',
+    'арал': 'aral', 'аркалык': 'arkalyk', 'хромтау': 'khromtau',
+    'жетысай': 'zhetisay', 'сатпаев': 'satpayev', 'аксу': 'aksu',
+    'шу': 'shu',
+    # Старые алиасы которые kolesa возвращает
+    'semei': 'semey',  # парсер kolesa сейчас уже сам нормализует, но защита
+}
+
+
+def _normalize_city(c: Optional[str]) -> Optional[str]:
+    """
+    Нормализует city value для сохранения в БД:
+      - "Костанай - Сегодня в" / "Павлодар -" → strip suffix → "Костанай" / "Павлодар"
+      - "Алматы" (кириллица) → "almaty" (latin slug)
+      - "0" / "" → None
+      - неизвестные значения возвращаются как есть (не lower'им non-mapped, чтобы не
+        поломать существующие латинские slug'и типа 'ust-kamenogorsk')
+    """
+    if not c or c == "0":
+        return None
+    s = c.strip()
+    # Strip " - что-то" суффикс ТОЛЬКО с пробелами вокруг дефиса (не ломает
+    # 'ust-kamenogorsk' / 'land-rover'). Дефис без пробелов остаётся.
+    s = re.sub(r'\s+-\s*.*$', '', s).strip()
+    if not s:
+        return None
+    # Известный кириллический → latin slug
+    return _CITY_NORMALIZATIONS.get(s.lower(), s)
 
 
 def _parse_database_url(url: str) -> dict:
@@ -101,6 +149,11 @@ async def save_listing(conn: asyncpg.Connection, data: dict) -> str:
     Если цена изменилась — записывает новую запись в price_history.
     Автоматически создает связи с брендами и моделями.
     """
+    # 0. Нормализация city перед вставкой — гарантирует latin slug в БД
+    # независимо от того, что прислал парсер (OLX/mycar часто кириллицу).
+    if data.get("city"):
+        data = {**data, "city": _normalize_city(data["city"])}
+
     # 1. Upsert бренда
     if data.get("brand_slug"):
         # Use slug.title() as name fallback — more reliable than splitting the full title

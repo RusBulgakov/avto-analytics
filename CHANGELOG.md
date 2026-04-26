@@ -62,6 +62,30 @@ UPDATE listings l SET model_id = NULL FROM models m
 
 ---
 
+## 2026-04-26 — City normalization: 14+ городов добавлены на карту
+
+### Added
+- **`parsers/common/db.py::_normalize_city`** — helper, нормализующий city перед `INSERT`. Маппит 36 кириллических имён в latin slug'и, обрезает мусорные суффиксы `" - Сегодня в"` / `" -"` (только с пробелами вокруг дефиса — не ломает `ust-kamenogorsk` / `land-rover`). Вызывается в начале `save_listing`. Защита от регрессии — независимо от того, что присылает парсер.
+- **`backend/.../analytics.py::_CITY_COORDS`** расширен с 20 → **34 городов**: добавлены `ekibastuz`, `taldykorgan`, `zhezkazgan`, `ridder`, `balkhash`, `satpayev`, `rudny`, `stepnogorsk`, `kentau`, `zhanaozen`, `arkalyk`, `kapchagay`, `khromtau`, `shu`. Все эти slug'и реально присутствуют в DB после нормализации.
+
+### Manual ops (ad-hoc Python script — НЕ в репо)
+- **Bulk DB cleanup: ~1700 listings** мигрированы из кириллицы / суффикс-мусора в latin slug'и:
+  - `Алматы` (670) / `Астана` (363) / `Шымкент` (101) / `Караганда` (92) и т.д. → latin slug'и
+  - `Костанай - Сегодня в` / `Павлодар -` / `Семей - Сегодня в` → чистые slug'и
+  - `Талдыкорган` (25) / `Кызылорда` (14) / `Жанаозен` (24) / `Сатпаев` (19) → latin
+- **Pavlodar теперь видим на карте**: было 0 в `/geo`, стало 321 active.
+
+### Incident & rollback (учиться на ошибке)
+**Инцидент:** Первая итерация моего regex-нормализатора `\s*-\s*.*$` (БЕЗ обязательных пробелов вокруг дефиса) **поломала 18,481 `ust-kamenogorsk` → `ust`**, потому что захватывала валидные дефисы внутри slug'ов. Также применённый затем `.lower()` к non-mapped значениям превратил латинские slug'и в lowercase копии.
+**Rollback:** `UPDATE listings SET city = 'ust-kamenogorsk' WHERE city IN ('ust', 'усть')` — восстановлено 18,481 + 138 listings.
+**V2 фикс:** regex теперь `\s+-\s*.*$` (минимум один пробел перед дефисом), и `_normalize_city` НЕ применяет `.lower()` к не-маппированным значениям — возвращает их как есть.
+**Урок (логировано в `CLAUDE.md`):** при массовых SQL миграциях `city`-style данных всегда тестировать regex на dry-run выводе **до** UPDATE, особенно когда в выходных данных есть значения с дефисами.
+
+### Why
+OLX и mycar парсеры пишут city в кириллице (`"Алматы"`), kolesa — в latin slug (`"almaty"`). `/geo` endpoint матчит по latin slug'у, поэтому ~1500 кириллических listings не попадали на карту. Также мусор типа `"Павлодар - Сегодня в"` (это парсер схватил часть HTML текста рядом с city) тоже не матчился.
+
+---
+
 ## 2026-04-26 — Распространение `brand_name`/`model_name` на остальные парсеры
 
 ### Changed
