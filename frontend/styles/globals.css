@@ -469,10 +469,107 @@ button { font-family: inherit; }
 }
 @media (max-width: 640px) {
   .kpi-grid { grid-template-columns: 1fr; }
-  .topbar { padding: 0 12px; gap: 10px; }
+  .topbar { padding: 0 10px; gap: 8px; }
   .ticker { display: none; }
   .main { padding: 10px; }
   .nav { display: none; }
+  /* Поиск-кнопку и Tweaks-шестерёнку прячем — burger открывает меню,
+     Tweaks доступен внутри overlay-меню */
+  .topbar-btn { display: none; }
+  .topbar-burger { display: inline-flex !important; }
+  .brand { font-size: 13px; }
+  .brand-meta { display: none; }
+  .filterbar { padding: 8px 10px; }
+
+  /* Card header: title и chip-group в один ряд могут не помещаться */
+  .card-h { flex-wrap: wrap; gap: 8px; }
+  .card-h > div:first-child { flex: 1 1 100%; }
+
+  /* Уменьшить header padding для card-b на узком */
+  .card-b { padding: 12px; }
+
+  /* Title sizes на мобиле */
+  .page-title { font-size: 22px; }
+  .page-sub { font-size: 12px; }
+  .card-title { font-size: 13px; }
+
+  /* Heatmap клетки покрупнее на тач — иначе hover невозможен,
+     но font 9.5px сохраняем чтобы лезла мин. цена/объём */
+  .hm-cell { height: 22px; font-size: 9px; }
+  .hm-label { font-size: 9px; padding-right: 4px; }
+  .hm-col-label { font-size: 9px; }
+}
+
+/* Mobile burger button — скрыт на десктопе, показан на <640 через rule выше */
+.topbar-burger {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 32px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.topbar-burger:hover { background: var(--surface-hover); }
+
+/* Mobile nav overlay — fullscreen list of routes */
+.mobile-nav-overlay {
+  position: fixed;
+  inset: 48px 0 0 0;  /* topbar height */
+  background: rgba(10, 12, 16, 0.96);
+  backdrop-filter: blur(8px);
+  z-index: 100;
+  padding: 24px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+}
+.mobile-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mobile-nav a {
+  padding: 14px 16px;
+  font-family: var(--display);
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--text);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  text-decoration: none;
+  transition: background 0.12s, border-color 0.12s;
+}
+.mobile-nav a:hover, .mobile-nav a.active {
+  background: var(--surface-hover);
+  border-color: var(--info);
+  color: var(--info);
+}
+
+/* Tables: горизонтальный скролл на узком — обычная таблица 8 колонок не
+   влезает в 360px. Карточка получает overflow-x вместо горизонтального
+   обрезания. */
+@media (max-width: 768px) {
+  .card-b > .tbl,
+  .card-b.flush > .tbl {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    white-space: nowrap;
+  }
+  .tbl th, .tbl td { padding: 8px 10px; font-size: 12px; }
+  .filterbar > * { font-size: 11.5px; }
+
+  /* Period-group + chip-group на узком становятся одним рядом — оставляем
+     возможность горизонтального скролла filterbar (overflow-x:auto) */
 }
 
 /* ═══ Badges ═════════════════════════════════════════════ */

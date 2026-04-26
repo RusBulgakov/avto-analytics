@@ -62,6 +62,27 @@ UPDATE listings l SET model_id = NULL FROM models m
 
 ---
 
+## 2026-04-26 — Mobile responsive pass
+
+### Added
+- **Burger menu в `Topbar`** — на ширине <640px все nav-ссылки (`.nav`) скрыты, а появляется кнопка `☰`. По клику разворачивается fullscreen overlay с большими route-tap'ами (Дашборд / Марки / Рентабельность / Прогноз). Overlay закрывается при клике на ссылку, на пустое место, или при route change. `body` блокируется от скролла пока меню открыто.
+- **CSS: `.topbar-burger`, `.mobile-nav-overlay`, `.mobile-nav`** — display:none на десктопе, видимы только в мобильном media query. Backdrop-filter blur для затемнения фона.
+
+### Changed (`globals.css`)
+- **Mobile <640px**: `topbar-btn` (Поиск + ⚙ Настройки) скрыты — место для burger. `brand-meta` ("KZ · V1") скрыт. `card-h` теперь `flex-wrap: wrap` с `gap: 8px`, title занимает 100% ширины — chip-group переезжает на следующий ряд (раньше упирались/обрезались). `card-b` padding 14→12px. `page-title` 24→22, `card-title` 13.5→13. Heatmap клетки 20→22px высота с font 9px (для лучшего тач-таргета).
+- **Mobile <768px**: таблицы `.tbl` внутри `.card-b` получают `display:block; overflow-x:auto` — wide-tables (profit-ranking 8 колонок) перестали ломать layout, скроллятся горизонтально с `-webkit-overflow-scrolling: touch`. Td/th padding 14→8/10, font-size до 12px.
+
+### Why
+До фикса: на 375px/iPhone 12 (типичный мобильник) `.nav` скрыт без замены — пользователь не мог перейти из дашборда на /brands или /profitability вообще. Таблица рейтинга упиралась в правый край и просто обрезалась. `.card-h` с длинным title и chip-group выталкивал последний рядом.
+
+### Что не правил (намеренно)
+- KZMap (Leaflet): height 380 фикс, scroll-zoom отключён — норм на тач.
+- PriceCandles/BoxPlot: SVG viewBox auto-scale через width:100%, на узком становится мельче, но читаемо.
+- PriceChart (Recharts ResponsiveContainer): свой responsive, не трогаем.
+- FilterBar: уже `overflow-x: auto` — chip-group переполняется в горизонтальный скролл, что приемлемо.
+
+---
+
 ## 2026-04-26 — Boost coverage: OLX per-city + mycar no-proxy
 
 ### Changed
