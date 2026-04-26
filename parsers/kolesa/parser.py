@@ -547,21 +547,28 @@ def _render_progress_bar(
     total_saved: int, total_new: int, elapsed_sec: float,
 ) -> str:
     """
-    Рендерит HTML прогресс-бар по СТРАНИЦАМ (не по батчам).
-    Это даёт плавный прогресс даже пока один крупный фид (almaty на 250 стр)
-    висит на одном батче часами.
+    Рендерит HTML прогресс-бар.
+    Прогресс считается **по фидам** (feeds_done / total_feeds), а не по
+    страницам — потому что страницы непредсказуемы (короткий feed = 1 page,
+    toyota = 250). Раньше при оценке `len(feeds) * 50` короткие feeds давали
+    `pct=1%` и ETA = 17 дней, что выглядело абсурдно.
+
+    ETA — adaptive: предсказывает оставшееся время на основе уже завершённых
+    фидов (avg pages per done feed × remaining feeds / current rate).
     """
-    pct = (pages_done / total_pages_estimate * 100) if total_pages_estimate else 0
-    pct = min(pct, 99.9)  # не показываем 100% пока не финал
+    # Прогресс по фидам (стабильнее)
+    pct = (feeds_done / total_feeds * 100) if total_feeds else 0
+    pct = min(pct, 99.9)
     bar_width = 20
     filled = int(bar_width * pct / 100)
     bar = "█" * filled + "░" * (bar_width - filled)
 
-    # ETA: линейная экстраполяция по скорости страниц/сек
-    if pages_done > 5 and elapsed_sec > 30:
+    # Adaptive ETA — экстраполируем по реальному avg pages per done feed
+    if feeds_done >= 3 and elapsed_sec > 60 and pages_done > 0:
+        avg_pages_per_feed = pages_done / max(1, feeds_done)
+        pages_remaining_est = (total_feeds - feeds_done) * avg_pages_per_feed
         rate = pages_done / elapsed_sec  # pages/sec
-        remaining = max(0, total_pages_estimate - pages_done)
-        eta_str = _fmt_duration(remaining / rate) if rate > 0 else "—"
+        eta_str = _fmt_duration(pages_remaining_est / rate) if rate > 0 else "—"
     else:
         eta_str = "—"
 

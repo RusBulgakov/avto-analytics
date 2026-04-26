@@ -62,6 +62,58 @@ UPDATE listings l SET model_id = NULL FROM models m
 
 ---
 
+## 2026-04-26 — Parser ETA: adaptive estimate (was showing 17 дней)
+
+### Why
+Юзер увидел в Telegram-прогрессе: `1.0% • 4ч прошло • ETA: 417ч`. ETA 17 дней при реальном времени работы 4-5 часов — abusive bug.
+
+Корень: `TOTAL_PAGES_ESTIMATE = len(feeds) × 50` = 96 × 50 = **4800 pages**. Это переоценка в 2-3×. Реально парсер делает 1,500-2,500 pages на shard:
+- Короткие feeds (lifan, seat, zaz) — 1-3 pages, останавливаются на пустой
+- Длинные feeds (toyota, vaz) — до 250 pages
+- Average ~15 pages/feed × 96 feeds = ~1,500 expected total
+
+Линейная экстраполяция от ранних коротких feeds (45 done × ~1 page/feed = 46 pages) проектировала pages_remaining = 4754 → ETA 17 дней. Длинные feeds впереди резко изменили бы rate, но ETA не self-correcting когда базовый estimate static.
+
+### Changed (`parsers/kolesa/parser.py::_render_progress_bar`)
+- **% теперь считается по фидам** (`feeds_done / total_feeds`), а не по страницам. Это стабильный знаменатель — total_feeds известен точно. Раньше короткие feeds давали `pct=1%` хотя 47% feeds уже сделано.
+- **ETA adaptive**: пересчитывается на каждом обновлении из текущего avg pages-per-feed:
+  ```
+  avg_per_feed = pages_done / feeds_done
+  remaining_pages = (total_feeds - feeds_done) × avg_per_feed
+  ETA = remaining_pages / current_rate
+  ```
+  Когда длинные feeds (toyota/vaz) начинают, avg сразу растёт → ETA увеличивается с реалистичным числом, не остаётся stale 17 дней.
+
+### Validated на user's actual data
+```
+                                      OLD             NEW
+feeds_done=45/96, pages=46, 4h elapsed:
+  %:    1.0% ❌ (выглядит как ничего не сделали)   46.9% ✓ (реальный прогресс)
+  ETA:  413ч ❌ (17 дней)                          4ч 31м ✓ (реалистичный)
+```
+
+### Не покрыто (отдельно — coverage gap)
+Сравнение DB vs kolesa.kz:
+```
+Toyota         9,130 / 34,185 = 27%   coverage
+Lada           5,692 / 18,759 = 30%
+Hyundai        5,855 / 16,453 = 36%
+Mercedes-Benz  2,817 / 12,726 = 22%
+Среднее: 20-36% coverage
+```
+
+Корни coverage gap (НЕ парсер bug — фундаментальные ограничения):
+1. **5000-page cap kolesa**: каждый feed (`/cars/toyota/`) обрывается на 250 pages × 20 listings = 5,000. Toyota активных 34k — мы видим только 5k через brand-feed. Mitigation: 14 model-level feeds (toyota/camry, toyota/land-cruiser-prado, etc.) уже добавлены — но purely теоретический максимум 75k для Toyota всё равно ниже kolesa-counter.
+2. **Flash listings**: 34% всех listings (101,616 / 297,869) парсер видел один раз — kolesa скрывает их сразу после первой публикации (anti-bot теория). Их нельзя "догнать".
+3. **Парсер-rotation slow**: за 6h cycle парсер видит ~9k active listings (=5% kolesa). За 4 cycle/day = 20%. За неделю = 100% теоретически — но deactivate threshold 168h = одна неделя как раз. Если cycle хоть раз пропустил листинг → mark inactive.
+
+### Возможные fixes coverage (пока в TODO)
+- **CITY_CONCURRENCY 3 → 5** — рискуем IP-блок, но возможно kolesa дешевле теперь
+- **Per-price-range feeds**: `?price_from=0&price_to=3000000` etc. — обходит 5000-page cap по другой оси
+- **Per-city × per-brand**: `/cars/toyota/almaty/` — combinatorial explosion но дроблиение exactly matches market
+
+---
+
 ## 2026-04-26 — Backtest: filter flash-listings (teaser prices)
 
 ### Why
