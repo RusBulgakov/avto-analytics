@@ -218,22 +218,25 @@ def _validate_model(model: Optional[str], brand: Optional[str]) -> Optional[str]
     Отсекаем:
     - пусто / None / нестрока
     - длина < 2 символов
-    - 4-значный год (попадает вместо модели когда name = "Brand 2020 г.")
-    - чистые цифры (например "2010" или "1234")
-    - совпадение с brand (kolesa возвращает "Toyota" / "Toyota" когда
-      submodel не извлекли — синтетическая привязка ухудшает аналитику)
+    - 4-значный год в диапазоне 1990–2030 (попадает в model когда
+      name = "Brand 2020 г." и нет реальной submodel)
+    - совпадение с brand (kolesa отдаёт "Toyota"/"Toyota" когда submodel
+      не извлёк — синтетическая привязка ухудшает аналитику)
+
+    НЕ отсекаем чистые цифры в общем случае — много легитимных моделей
+    обозначается числом: Audi 80/100, BMW 525/528/530/535, Mercedes 190,
+    Mazda 626/323, Porsche 911, Lada 2107/2114/2110, и т.п. (~20k объявл).
     """
     if not model or not isinstance(model, str):
         return None
     cleaned = model.strip()
     if len(cleaned) < 2:
         return None
-    # 4-значный год → не модель
+    # 4-значный год → не модель (Lada 2107 — 4 цифры, но НЕ в диапазоне годов)
     if re.fullmatch(r"\d{4}", cleaned):
-        return None
-    # Чисто цифры → подозрительно (модели обычно содержат буквы)
-    if cleaned.replace("-", "").replace(" ", "").isdigit():
-        return None
+        year_val = int(cleaned)
+        if 1990 <= year_val <= 2030:
+            return None
     # Совпадение с brand — kolesa так делает когда не извлёк submodel
     if brand and cleaned.lower() == brand.strip().lower():
         return None
