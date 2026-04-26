@@ -62,6 +62,64 @@ UPDATE listings l SET model_id = NULL FROM models m
 
 ---
 
+## 2026-04-26 — Forecast V3 (mileage + holidays) + Backtest V2 (arb-margin)
+
+Три родственных upgrade'a по списку "что хочется добавить":
+
+### #1 Mileage как 3-й фактор regression
+- **`/forecast` endpoint**: SQL обогащён `mileage_km` per row + per-week median. Если ≥60% недель имеют mileage AND ≥3 distinct values — запускается **multivariate OLS** на features `[1, week, mileage]`, иначе fallback на single-feature.
+- **`ols_multivariate`** helper — Gauss-Jordan elimination в pure Python (без numpy/scipy), решает (X^T X) β = X^T y для произвольного числа features. Возвращает coefficients, R², residual_std.
+- Новые поля в response: `mileage_coverage_weeks`, `mileage_coef_usd_per_10k_km`, `multivariate_r2_usd`, `model_features` ("intercept", "week", "mileage", опц. "holiday").
+
+**Validated на проде** — Toyota Camry 2017:
+```
+2-feature (только week):    R² = 0.001  (шум)
+3-feature (+ mileage):      R² = 0.360  (+36 п.п.!)
+mileage coefficient: -$302 per 10k km
+```
+**Mileage объясняет 36% вариации цены** — это огромный сигнал.
+
+### #2 Holiday-dummy infrastructure
+- **`_is_holiday_week`** helper в `/forecast`: помечает недели чьё ±7 дней от Нового года, 9 мая, Дня независимости (16 дек), посленалоговых периодов (1 мая / 1 ноября). Список расширяется до 2028.
+- При наличии ≥1 holiday-week + ≥3 non-holiday weeks в выборке — **добавляется как 4-й feature** в multivariate OLS.
+- Возвращает `holiday_effect_pct` — на сколько % дешевле/дороже в holiday weeks.
+
+**Текущий статус**: наша история (с 2 марта 2026) **не включает** ни одного holiday → `holiday_effect_pct = null`. Инфраструктура заработает после 9 мая 2026 / следующего налогового периода — данные просто наберутся.
+
+### #3 Backtest V2 — арбитражная маржа
+- Новый CTE-JOIN `cg = group_p25 AS close-week`: для каждого закрывшегося signal'а считаем **p25 группы на момент closure**, а не последнюю цену самого листинга.
+- Новые primary метрики:
+  - `avg_arb_margin = AVG((group_p25_at_close - first_price) / first_price)`
+  - `median_arb_margin` (median вместо avg — robust к outliers)
+- Старые метрики (`avg_listing_margin`, `median_listing_margin`) сохранены как secondary для сравнения.
+- **Outlier-guard**: `first_price >= 100,000 ₸ AND first_price > group_p25 * 0.30` — отсекает junk listings с фиктивно низкой ценой.
+- Top-winners table теперь имеет колонки: `buy`, `market_p25_at_close`, `arb_margin`, `listing_margin`. Сортировка по `arb_margin DESC`.
+
+**Validated** — Toyota Camry, 60d period, -15% discount, 45d hold:
+```
+total signals: 1,746  (1,782 без outlier-guard, отсеяли 36 мусорных)
+hits (sold ≤45d): 1,465
+
+V1 listing margin:  avg -0.33% / median 0.00%
+V2 arb margin:      avg +40%   / median +31%
+```
+**V2 выявляет реальный 31% арбитраж** который в V1 был невидим. Объяснение: продавцы продают сразу по выставленной цене (не реализуя upside), а покупатель потом перепродаёт по рыночному p25 — это где сидит маржа.
+
+### Frontend changes
+- **Forecast KPI**: добавлен 6-й tile "Mileage" (показывает coefficient $/10k km + multivariate R²) когда mileage signal доступен.
+- **Backtest section**: KPI "Arb margin" заменил "Avg margin" как primary (median вместо avg для robustness). Top-winners table перестроена: колонки `Купил / Market p25 / Arb margin / Дней`.
+
+### Зависимости
+Никаких новых — `ols_multivariate` написана в pure Python (Gauss-Jordan), без numpy/scipy.
+
+### #4 Skip
+Prophet/ARIMA — отложено до сентября 2026, когда соберём 6+ месяцев исторических данных.
+
+### #5 Pending
+Per-listing fair-price predictor (`/listing` page) — следующий round.
+
+---
+
 ## 2026-04-26 — `is_in_stock` flag — "В наличии" vs "На заказ"
 
 ### Why

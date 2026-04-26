@@ -1289,11 +1289,13 @@ async def get_forecast(
     where = " AND ".join(conditions)
     query = f"""
         WITH priced AS (
-            -- Каждая запись price_history с FX-курсом за день записи (forward-fill)
+            -- Каждая запись price_history с FX-курсом за день записи (forward-fill).
+            -- mileage_km тоже несём — для multivariate regression если covered.
             SELECT
                 DATE_TRUNC('week', ph.recorded_at) AS week_start,
                 ph.price_kzt::numeric AS price_kzt,
                 fx.usd_kzt::numeric AS usd_rate,
+                l.mileage_km::numeric AS mileage_km,
                 l.id AS listing_id
             FROM price_history ph
             JOIN listings l ON l.id = ph.listing_id
@@ -1311,6 +1313,12 @@ async def get_forecast(
                 ORDER BY (price_kzt / NULLIF(usd_rate, 0))
             )::numeric(14, 2) AS median_usd,
             AVG(usd_rate)::numeric(10, 4) AS week_usd_rate,
+            -- Median mileage этой недели (только если есть данные)
+            PERCENTILE_CONT(0.5) WITHIN GROUP (
+                ORDER BY mileage_km
+            ) FILTER (WHERE mileage_km IS NOT NULL AND mileage_km BETWEEN 1000 AND 1000000)::numeric AS median_mileage,
+            -- Сколько records с известным mileage
+            COUNT(*) FILTER (WHERE mileage_km IS NOT NULL AND mileage_km BETWEEN 1000 AND 1000000)::int AS mileage_count,
             COUNT(DISTINCT listing_id)::int AS listing_count
         FROM priced
         WHERE usd_rate IS NOT NULL
@@ -1331,6 +1339,8 @@ async def get_forecast(
             int(r["median_kzt"]),
             float(r["median_usd"] or 0),
             float(r["week_usd_rate"] or 0),
+            float(r["median_mileage"]) if r["median_mileage"] is not None else None,
+            r["mileage_count"],
             r["listing_count"],
         )
         for r in rows
@@ -1343,9 +1353,10 @@ async def get_forecast(
             "median_kzt": kzt,
             "median_usd": round(usd, 2),
             "fx_rate": round(rate, 2),
+            "median_mileage_km": int(mil) if mil is not None else None,
             "count": c,
         }
-        for d, kzt, usd, rate, c in points
+        for d, kzt, usd, rate, mil, _mc, c in points
     ]
 
     if n < 4:
@@ -1362,7 +1373,48 @@ async def get_forecast(
             "error": "Недостаточно данных для прогноза (минимум 4 недели)",
         }
 
-    # OLS-helper для вычисления slope, intercept, R², residual_std
+    # ─── Multivariate OLS (Gauss-Jordan) ──────────────────────────────
+    # Решает (X^T X) β = X^T y методом Гаусса. Без numpy.
+    # X: list[list[float]] — каждая строка = features одной точки (включая 1 для intercept).
+    # y: list[float]
+    # Returns: (coefficients, r2, residual_std)
+    def ols_multivariate(X: list[list[float]], y: list[float]) -> tuple[list[float] | None, float, float]:
+        n_rows = len(y)
+        if n_rows < 3:
+            return None, 0.0, 0.0
+        n_features = len(X[0])
+        # X^T X (квадрат n_features × n_features)
+        XtX = [[sum(X[i][r] * X[i][c] for i in range(n_rows))
+                for c in range(n_features)] for r in range(n_features)]
+        Xty = [sum(X[i][r] * y[i] for i in range(n_rows)) for r in range(n_features)]
+        # Aug matrix [XtX | Xty]
+        M = [XtX[r] + [Xty[r]] for r in range(n_features)]
+        # Gauss-Jordan
+        for col in range(n_features):
+            # Partial pivoting
+            max_r = max(range(col, n_features), key=lambda rr: abs(M[rr][col]))
+            M[col], M[max_r] = M[max_r], M[col]
+            if abs(M[col][col]) < 1e-12:
+                return None, 0.0, 0.0
+            piv = M[col][col]
+            for c in range(n_features + 1):
+                M[col][c] /= piv
+            for rr in range(n_features):
+                if rr == col: continue
+                factor = M[rr][col]
+                for c in range(n_features + 1):
+                    M[rr][c] -= factor * M[col][c]
+        beta = [row[-1] for row in M]
+        # R² + residual_std
+        y_mean = sum(y) / n_rows
+        residuals = [y[i] - sum(X[i][f] * beta[f] for f in range(n_features)) for i in range(n_rows)]
+        rss = sum(r * r for r in residuals)
+        tss = sum((yv - y_mean) ** 2 for yv in y)
+        r2 = (1 - rss / tss) if tss > 0 else 0.0
+        rstd = math.sqrt(rss / max(1, n_rows - n_features))
+        return beta, r2, rstd
+
+    # OLS-helper для simple 1-feature regression (week only) — fallback
     def ols(ys: list[float]) -> tuple[float, float, float, float]:
         xs = list(range(len(ys)))
         x_mean = sum(xs) / len(xs)
@@ -1380,18 +1432,85 @@ async def get_forecast(
 
     ys_kzt = [float(p[1]) for p in points]
     ys_usd = [float(p[2]) for p in points]
+    mileages = [p[4] for p in points]
+    mileage_counts = [p[5] for p in points]
+    week_idxs = list(range(n))
 
+    # Single-feature OLS на kzt и usd — baseline
     slope_kzt, intercept_kzt, r2_kzt, rstd_kzt = ols(ys_kzt)
     slope_usd, intercept_usd, r2_usd, rstd_usd = ols(ys_usd)
 
     mean_kzt = sum(ys_kzt) / n
     mean_usd = sum(ys_usd) / n
 
-    trend_kzt = (slope_kzt * 4 / mean_kzt * 100) if mean_kzt else 0.0
-    trend_usd = (slope_usd * 4 / mean_usd * 100) if mean_usd else 0.0
+    # ─── Holiday-dummy: помечаем недели с праздниками ─────────────────
+    # Гипотеза: цены дешевле сразу после налоговых дедлайнов (30 апр / 31 окт)
+    # — продают чтобы покрыть налоги. На 9 мая / Новый год — спад спроса.
+    # Сейчас наша история (с марта 2026) не включает ни одного "holiday" в
+    # этом списке — coefficient вернётся NULL. Когда история перевалит
+    # через 9 мая 2026 / посленалог, инфраструктура заработает.
+    def _is_holiday_week(week_start) -> int:
+        # week_start — datetime/date. Считаем holiday если центр недели
+        # (week_start + 3 дня) попадает в окно ±7 дней от holiday-event.
+        from datetime import date as _date
+        center = week_start + timedelta(days=3)
+        center_d = center.date() if hasattr(center, 'date') else center
+        events = []
+        for yr in range(2024, 2028):
+            events.append(_date(yr, 1, 1))    # New Year
+            events.append(_date(yr, 5, 9))    # Victory Day
+            events.append(_date(yr, 5, 1))    # Day of unity → tax-april after
+            events.append(_date(yr, 11, 1))   # после oct-tax
+            events.append(_date(yr, 12, 16))  # Independence Day
+            events.append(_date(yr, 12, 28))  # pre-NY
+        for ev in events:
+            if abs((center_d - ev).days) <= 7:
+                return 1
+        return 0
+
+    holidays = [_is_holiday_week(p[0]) for p in points]
+    has_holiday_signal = sum(holidays) >= 1 and (n - sum(holidays)) >= 3
+
+    # ─── Multivariate OLS с mileage + (опционально) holiday ──────────
+    weeks_with_mileage = sum(1 for m in mileages if m is not None)
+    distinct_mileage = len({round(m, -3) for m in mileages if m is not None})  # round to 1k km
+    has_mileage_signal = (
+        weeks_with_mileage >= max(4, int(0.6 * n))
+        and distinct_mileage >= 3
+    )
+    mileage_coef_per_10k_km = None
+    multivariate_r2_usd = None
+    holiday_effect_pct = None
+    used_features = ["intercept", "week"]
+    if has_mileage_signal:
+        # Собираем X с features. Holiday включаем только если есть variance.
+        rows_X: list[list[float]] = []
+        rows_y_usd: list[float] = []
+        feat_cols = ["intercept", "week", "mileage"]
+        if has_holiday_signal:
+            feat_cols.append("holiday")
+        for k in range(n):
+            if mileages[k] is None:
+                continue
+            row = [1.0, float(week_idxs[k]), float(mileages[k])]
+            if has_holiday_signal:
+                row.append(float(holidays[k]))
+            rows_X.append(row)
+            rows_y_usd.append(ys_usd[k])
+        beta, r2_mv, rstd_mv = ols_multivariate(rows_X, rows_y_usd)
+        if beta is not None:
+            multivariate_r2_usd = round(r2_mv, 3)
+            mileage_coef_per_10k_km = round(beta[2] * 10_000, 2)
+            if has_holiday_signal and len(beta) > 3:
+                # holiday coefficient в USD; конвертируем в %от mean_usd для UX
+                holiday_effect_pct = round(beta[3] / mean_usd * 100, 2) if mean_usd else None
+            used_features = feat_cols
+
     # FX-вклад: разница между трендом в KZT и трендом в USD.
     # > 0 → KZT-цены растут быстрее USD-цен из-за ослабления тенге
     # < 0 → KZT-цены растут медленнее USD-цен (тенге укрепляется)
+    trend_kzt = (slope_kzt * 4 / mean_kzt * 100) if mean_kzt else 0.0
+    trend_usd = (slope_usd * 4 / mean_usd * 100) if mean_usd else 0.0
     fx_impact = trend_kzt - trend_usd
 
     # Forecast: используем USD-тренд (он чище, без FX-шума), потом конвертируем в KZT
@@ -1426,6 +1545,12 @@ async def get_forecast(
         "sample_size": n,
         "horizon_weeks": horizon_weeks,
         "current_fx_rate": round(last_fx_rate, 2),
+        # ── Multivariate analysis (V3) ─────────────────────────────────
+        "mileage_coverage_weeks": weeks_with_mileage,
+        "mileage_coef_usd_per_10k_km": mileage_coef_per_10k_km,
+        "multivariate_r2_usd": multivariate_r2_usd,
+        "holiday_effect_pct": holiday_effect_pct,
+        "model_features": used_features,
     }
 
 
@@ -1533,6 +1658,8 @@ async def get_backtest(
                    fp.first_price,
                    lp.last_price,
                    gp.p25,
+                   -- ★ V2: p25 группы на момент closure (или текущая если ещё открыто)
+                   cg.p25 AS group_p25_at_close,
                    (fp.first_price / NULLIF(gp.p25, 0)) AS price_ratio,
                    EXTRACT(EPOCH FROM (COALESCE(l.closed_at, NOW()) - l.first_seen_at)) / 86400.0 AS days_held
             FROM listings l
@@ -1543,9 +1670,20 @@ async def get_backtest(
              AND gp.model_id = l.model_id
              AND gp.year = l.year
              AND gp.week = DATE_TRUNC('week', l.first_seen_at)
+            -- ★ V2: дополнительный JOIN group_p25 на close-week
+            LEFT JOIN group_p25 cg
+              ON cg.brand_id = l.brand_id
+             AND cg.model_id = l.model_id
+             AND cg.year = l.year
+             AND cg.week = DATE_TRUNC('week', COALESCE(l.closed_at, NOW()))
             WHERE {base_where}
               AND fp.first_price < gp.p25 * ${bt_idx}
-              AND fp.first_price > 0
+              -- ★ Защита от outliers: минимум 100k ₸ (отсекает junk
+              -- listings где first_price = 1 / 100 ₸ и ломает avg-margin)
+              AND fp.first_price >= 100000
+              -- ★ Также: discount не больше 70% — иначе это явно мусор
+              -- (нормальная сделка не даёт >70% дисконта от p25)
+              AND fp.first_price > gp.p25 * 0.30
         )
         SELECT
             COUNT(*)::int AS total_signals,
@@ -1558,19 +1696,34 @@ async def get_backtest(
               WHERE is_active OR (closed_at IS NOT NULL AND days_held > ${hold_idx})
             )::int AS misses,
             AVG(price_ratio)::numeric(8, 4) AS avg_signal_discount,
-            -- realized margin рассчитываем только для hits
+            -- V1: listing-based — последняя видимая цена / first_price (узкая метрика)
             AVG(
                 CASE
                   WHEN NOT is_active AND closed_at IS NOT NULL AND days_held <= ${hold_idx}
                     THEN (last_price / NULLIF(first_price, 0) - 1)
                 END
-            )::numeric(8, 4) AS avg_realized_margin,
+            )::numeric(8, 4) AS avg_listing_margin,
             PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY
                 CASE
                   WHEN NOT is_active AND closed_at IS NOT NULL AND days_held <= ${hold_idx}
                     THEN (last_price / NULLIF(first_price, 0) - 1)
                 END
-            )::numeric(8, 4) AS median_realized_margin,
+            )::numeric(8, 4) AS median_listing_margin,
+            -- ★ V2: arb-based — group p25 ON CLOSE / first_price (реальный proxy перепродажи)
+            AVG(
+                CASE
+                  WHEN NOT is_active AND closed_at IS NOT NULL AND days_held <= ${hold_idx}
+                       AND group_p25_at_close IS NOT NULL
+                    THEN (group_p25_at_close / NULLIF(first_price, 0) - 1)
+                END
+            )::numeric(8, 4) AS avg_arb_margin,
+            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY
+                CASE
+                  WHEN NOT is_active AND closed_at IS NOT NULL AND days_held <= ${hold_idx}
+                       AND group_p25_at_close IS NOT NULL
+                    THEN (group_p25_at_close / NULLIF(first_price, 0) - 1)
+                END
+            )::numeric(8, 4) AS median_arb_margin,
             PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY days_held)
               FILTER (WHERE NOT is_active AND closed_at IS NOT NULL)::numeric(6, 1) AS median_days_to_sell
         FROM signals
@@ -1600,8 +1753,11 @@ async def get_backtest(
                 HAVING COUNT(*) >= 5
             )
             SELECT b.name AS brand, m.name AS model, l.year,
-                   fp.first_price::bigint AS buy, lp.last_price::bigint AS sell,
-                   (lp.last_price / NULLIF(fp.first_price, 0) - 1)::numeric(8, 4) AS margin,
+                   fp.first_price::bigint AS buy,
+                   lp.last_price::bigint AS sell,
+                   cg.p25::bigint AS market_p25_at_close,
+                   (lp.last_price / NULLIF(fp.first_price, 0) - 1)::numeric(8, 4) AS listing_margin,
+                   (cg.p25 / NULLIF(fp.first_price, 0) - 1)::numeric(8, 4) AS arb_margin,
                    EXTRACT(EPOCH FROM (l.closed_at - l.first_seen_at)) / 86400.0 AS days,
                    l.listing_url
             FROM listings l
@@ -1612,13 +1768,17 @@ async def get_backtest(
             JOIN group_p25 gp ON gp.brand_id = l.brand_id AND gp.model_id = l.model_id
                              AND gp.year = l.year
                              AND gp.week = DATE_TRUNC('week', l.first_seen_at)
+            LEFT JOIN group_p25 cg ON cg.brand_id = l.brand_id AND cg.model_id = l.model_id
+                                  AND cg.year = l.year
+                                  AND cg.week = DATE_TRUNC('week', l.closed_at)
             WHERE {base_where}
               AND fp.first_price < gp.p25 * ${bt_idx}
               AND fp.first_price > 0
               AND NOT l.is_active
               AND l.closed_at IS NOT NULL
               AND EXTRACT(EPOCH FROM (l.closed_at - l.first_seen_at)) / 86400.0 <= ${hold_idx}
-            ORDER BY margin DESC NULLS LAST
+              AND cg.p25 IS NOT NULL  -- арб метрика требует close-week p25
+            ORDER BY (cg.p25 / NULLIF(fp.first_price, 0) - 1) DESC NULLS LAST
             LIMIT 10
         """
         top_rows = await conn.fetch(top_query, *params)
@@ -1634,8 +1794,10 @@ async def get_backtest(
             "hits": 0,
             "misses": 0,
             "win_rate": None,
-            "avg_realized_margin": None,
-            "median_realized_margin": None,
+            "avg_arb_margin": None,
+            "median_arb_margin": None,
+            "avg_listing_margin": None,
+            "median_listing_margin": None,
             "median_days_to_sell": None,
             "top_winners": [],
             "error": "Сигналов не найдено в выбранной выборке",
@@ -1656,8 +1818,12 @@ async def get_backtest(
         "misses": misses,
         "win_rate": round(hits / total, 3) if total else None,
         "avg_signal_discount": float(row["avg_signal_discount"]) if row["avg_signal_discount"] else None,
-        "avg_realized_margin": float(row["avg_realized_margin"]) if row["avg_realized_margin"] is not None else None,
-        "median_realized_margin": float(row["median_realized_margin"]) if row["median_realized_margin"] is not None else None,
+        # ── V2 metrics (primary) — арбитраж против текущего рынка ─────────
+        "avg_arb_margin": float(row["avg_arb_margin"]) if row["avg_arb_margin"] is not None else None,
+        "median_arb_margin": float(row["median_arb_margin"]) if row["median_arb_margin"] is not None else None,
+        # ── V1 legacy metrics — last_price того же листинга (узкая) ───────
+        "avg_listing_margin": float(row["avg_listing_margin"]) if row["avg_listing_margin"] is not None else None,
+        "median_listing_margin": float(row["median_listing_margin"]) if row["median_listing_margin"] is not None else None,
         "median_days_to_sell": float(row["median_days_to_sell"]) if row["median_days_to_sell"] is not None else None,
         "top_winners": [
             {
@@ -1666,7 +1832,9 @@ async def get_backtest(
                 "year": r["year"],
                 "buy_price": int(r["buy"]),
                 "sell_price": int(r["sell"]),
-                "margin": float(r["margin"]),
+                "market_p25_at_close": int(r["market_p25_at_close"]) if r["market_p25_at_close"] else None,
+                "arb_margin": float(r["arb_margin"]) if r["arb_margin"] is not None else None,
+                "listing_margin": float(r["listing_margin"]) if r["listing_margin"] is not None else None,
                 "days": float(r["days"]),
                 "url": r["listing_url"],
             }

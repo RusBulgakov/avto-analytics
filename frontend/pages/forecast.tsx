@@ -23,6 +23,7 @@ interface ForecastResp {
         median_kzt: number;
         median_usd: number;
         fx_rate: number;
+        median_mileage_km: number | null;
         count: number;
     }[];
     forecast: {
@@ -41,6 +42,12 @@ interface ForecastResp {
     sample_size: number;
     horizon_weeks?: number;
     current_fx_rate: number | null;
+    // V3 fields
+    mileage_coverage_weeks: number;
+    mileage_coef_usd_per_10k_km: number | null;
+    multivariate_r2_usd: number | null;
+    holiday_effect_pct: number | null;
+    model_features: string[];
     error?: string;
 }
 
@@ -51,13 +58,20 @@ interface BacktestResp {
     misses: number;
     win_rate: number | null;
     avg_signal_discount: number | null;
-    avg_realized_margin: number | null;
-    median_realized_margin: number | null;
+    // V2 (primary): arb-margin = group p25 at close / first_price - 1
+    avg_arb_margin: number | null;
+    median_arb_margin: number | null;
+    // V1 (legacy): listing-margin = last_price / first_price - 1
+    avg_listing_margin: number | null;
+    median_listing_margin: number | null;
     median_days_to_sell: number | null;
     top_winners: {
         brand: string; model: string; year: number;
         buy_price: number; sell_price: number;
-        margin: number; days: number; url: string;
+        market_p25_at_close: number | null;
+        arb_margin: number | null;
+        listing_margin: number | null;
+        days: number; url: string;
     }[];
     error?: string;
 }
@@ -367,6 +381,17 @@ export default function ForecastPage() {
                                         недель · USD = {forecast.current_fx_rate ?? '—'}
                                     </div>
                                 </div>
+                                {forecast.mileage_coef_usd_per_10k_km != null && (
+                                    <div className="kpi" style={{ minHeight: 100 }}>
+                                        <div className="uppercase" style={{ fontSize: 11, color: 'var(--text-muted)' }}>Mileage</div>
+                                        <div style={{ fontSize: 22, fontWeight: 600, fontFamily: 'var(--display)', marginTop: 4, color: 'var(--down)' }}>
+                                            {forecast.mileage_coef_usd_per_10k_km < 0 ? '−' : '+'}${Math.abs(forecast.mileage_coef_usd_per_10k_km).toFixed(0)}
+                                        </div>
+                                        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                                            на каждые 10к км · R² {forecast.multivariate_r2_usd?.toFixed(2) ?? '—'}
+                                        </div>
+                                    </div>
+                                )}
                             </section>
                         )}
 
@@ -489,21 +514,27 @@ export default function ForecastPage() {
                                             </div>
                                             <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{backtest.hits}/{backtest.total_signals} закрылись</div>
                                         </div>
-                                        <div className="kpi" style={{ minHeight: 88 }}>
-                                            <div className="uppercase" style={{ fontSize: 11, color: 'var(--text-muted)' }}>Avg margin</div>
+                                        <div
+                                            className="kpi"
+                                            style={{ minHeight: 88 }}
+                                            title="V2: средняя маржа арбитража = (p25 группы на момент закрытия / first_price - 1). Сравнивает с текущим рынком."
+                                        >
+                                            <div className="uppercase" style={{ fontSize: 11, color: 'var(--text-muted)' }}>Arb margin</div>
                                             <div
                                                 style={{
                                                     fontSize: 22, fontWeight: 600, fontFamily: 'var(--display)', marginTop: 4,
-                                                    color: backtest.avg_realized_margin != null && backtest.avg_realized_margin > 0
-                                                        ? 'var(--up)' : backtest.avg_realized_margin != null && backtest.avg_realized_margin < 0
+                                                    color: backtest.median_arb_margin != null && backtest.median_arb_margin > 0
+                                                        ? 'var(--up)' : backtest.median_arb_margin != null && backtest.median_arb_margin < 0
                                                         ? 'var(--down)' : 'var(--text)',
                                                 }}
                                             >
-                                                {backtest.avg_realized_margin != null
-                                                    ? `${backtest.avg_realized_margin > 0 ? '+' : ''}${(backtest.avg_realized_margin * 100).toFixed(2)}%`
+                                                {backtest.median_arb_margin != null
+                                                    ? `${backtest.median_arb_margin > 0 ? '+' : ''}${(backtest.median_arb_margin * 100).toFixed(1)}%`
                                                     : '—'}
                                             </div>
-                                            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>last vs first price</div>
+                                            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                                                median · vs market p25 на close
+                                            </div>
                                         </div>
                                         <div className="kpi" style={{ minHeight: 88 }}>
                                             <div className="uppercase" style={{ fontSize: 11, color: 'var(--text-muted)' }}>Median days</div>
@@ -525,8 +556,8 @@ export default function ForecastPage() {
                                                     <tr>
                                                         <th>Авто</th>
                                                         <th className="right">Купил</th>
-                                                        <th className="right">Продал</th>
-                                                        <th className="right">Маржа</th>
+                                                        <th className="right">Market p25</th>
+                                                        <th className="right">Arb margin</th>
                                                         <th className="right">Дней</th>
                                                     </tr>
                                                 </thead>
@@ -541,11 +572,15 @@ export default function ForecastPage() {
                                                                 </a>
                                                             </td>
                                                             <td className="num">{fmt.price(w.buy_price)}</td>
-                                                            <td className="num">{fmt.price(w.sell_price)}</td>
                                                             <td className="num">
-                                                                <Badge variant={w.margin > 0.05 ? 'up' : w.margin > 0 ? 'accent' : 'neutral'}>
-                                                                    {w.margin > 0 ? '+' : ''}{(w.margin * 100).toFixed(1)}%
-                                                                </Badge>
+                                                                {w.market_p25_at_close != null ? fmt.price(w.market_p25_at_close) : '—'}
+                                                            </td>
+                                                            <td className="num">
+                                                                {w.arb_margin != null ? (
+                                                                    <Badge variant={w.arb_margin > 0.20 ? 'up' : w.arb_margin > 0.05 ? 'accent' : 'neutral'}>
+                                                                        {w.arb_margin > 0 ? '+' : ''}{(w.arb_margin * 100).toFixed(0)}%
+                                                                    </Badge>
+                                                                ) : '—'}
                                                             </td>
                                                             <td className="num">{w.days.toFixed(0)}д</td>
                                                         </tr>
