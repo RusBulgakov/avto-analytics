@@ -4,6 +4,41 @@
 
 ---
 
+## 2026-04-26 — Multi-word model names ("Land Cruiser Prado", не просто "Land")
+
+### Fixed
+- **Parser kolesa (`parsers/kolesa/parser.py::_parse_item`)** — извлекает model из title как **всё между brand и 4-значным годом**, вместо `parts[1]` (наивный). Title `"Toyota Land Cruiser Prado 2018 г."` → `model = "Land Cruiser Prado"`, не "Land".
+- **Парсер выбирает самый информативный кандидат**: `attrs.model` (от kolesa, часто single-word типа "Land") и `title_model` (multi-word из title) — берётся вариант с наибольшим числом слов.
+- **Передача в БД**: `_parse_item` теперь возвращает явное поле `model_name` в data dict (было только `model_slug`). `save_listing` использует его, fallback на старую логику для других парсеров.
+
+### Changed
+- **`save_listing` в `parsers/common/db.py`**: ON CONFLICT при upsert моделей теперь **сохраняет multi-word имя**, если новая запись пришла с укороченным:
+  ```sql
+  ON CONFLICT (brand_id, slug) DO UPDATE
+  SET name = CASE
+      WHEN array_length(string_to_array(EXCLUDED.name, ' '), 1)
+           >= array_length(string_to_array(models.name, ' '), 1)
+      THEN EXCLUDED.name
+      ELSE models.name
+  END
+  ```
+  Раньше `SET name = EXCLUDED.name` всегда переписывал; следующий парсер run после ручной чистки откатил бы данные обратно.
+
+### Manual ops (ad-hoc Python script — НЕ в репо)
+- **Bulk DB cleanup: 807 моделей переименовано** через title-derived multi-word имена. Подход: для каждой модели из listings найти sample title, извлечь имя regex'ом (стрип brand-префикса с учётом локализованных вариантов "ВАЗ (Lada)" / "Mercedes-Benz", обрезать год). Примеры:
+  - `Toyota Land` → `Land Cruiser Prado` (slug=`land-cruiser-prado`, 4009 listings)
+  - `Toyota Land` → `Land Cruiser` (slug=`land-cruiser`, 2824)
+  - `Hyundai Santa` → `Santa Fe`
+  - `Lada (Lada)` → `Priora` / `Granta` / `Vesta` (slug-specific)
+  - `Mercedes Benz E` → `E 230` / `E 200` / `E 320` (по slug-modification)
+  - `Toyota Mark` → `Mark II`
+  - `Mitsubishi Montero` → `Montero Sport`
+
+### Why
+До фикса: kolesa.kz сам в JSON-attributes отдаёт `model = "Land"` для всех Land Cruiser/Prado/100/200. Парсер брал это значение, db.py поверх на CONFLICT переписывал name на single-word. В UI юзер видел два бренда "Toyota Land" с одинаковым именем но разными slug'ами и думал что это дубли.
+
+---
+
 ## 2026-04-26 — Profitability: filter garbage model names
 
 ### Changed

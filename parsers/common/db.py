@@ -117,14 +117,41 @@ async def save_listing(conn: asyncpg.Connection, data: dict) -> str:
 
     # 2. Upsert модели
     if data.get("brand_slug") and data.get("model_slug"):
-        parts = data.get("title", "").split()
-        model_name = parts[1] if len(parts) > 1 else data["model_slug"].title()
-        
+        # Предпочитаем model_name которое парсер уже извлёк (multi-word типа
+        # "Land Cruiser Prado"). Старые парсеры его не передают — fallback
+        # на наивный split title по словам, потом на slug. Naive parts[1]
+        # ломал многословные модели ("Toyota Land Cruiser Prado" → "Land").
+        model_name = data.get("model_name")
+        if not model_name:
+            # Fallback: вытащить из title всё между brand и 4-значным годом
+            title = data.get("title") or ""
+            parts = title.split()
+            year_idx = None
+            for j, p in enumerate(parts):
+                if p.isdigit() and len(p) == 4 and 1990 <= int(p) <= 2030:
+                    year_idx = j
+                    break
+            if year_idx is not None and year_idx > 1:
+                model_name = " ".join(parts[1:year_idx]).strip()
+            elif len(parts) > 1:
+                model_name = parts[1]
+            else:
+                model_name = data["model_slug"].replace("-", " ").title()
+
+        # ON CONFLICT: если в БД уже многословное имя (например "Land Cruiser
+        # Prado"), а парсер прислал укорот ("Land") — НЕ перезаписываем. Берём
+        # вариант с большим числом слов; при равенстве — новое.
         await conn.execute(
             """
-            INSERT INTO models (brand_id, name, slug) 
+            INSERT INTO models (brand_id, name, slug)
             SELECT id, $2, $3 FROM brands WHERE slug = $1
-            ON CONFLICT (brand_id, slug) DO UPDATE SET name = EXCLUDED.name
+            ON CONFLICT (brand_id, slug) DO UPDATE
+            SET name = CASE
+                WHEN array_length(string_to_array(EXCLUDED.name, ' '), 1) >=
+                     COALESCE(array_length(string_to_array(models.name, ' '), 1), 0)
+                THEN EXCLUDED.name
+                ELSE models.name
+            END
             """,
             data["brand_slug"], model_name, data["model_slug"]
         )

@@ -208,6 +208,38 @@ def _normalize_map(val: Optional[str], mapping: dict) -> Optional[str]:
     return mapping.get(key, val.title())  # fallback: capitalize original
 
 
+def _validate_model(model: Optional[str], brand: Optional[str]) -> Optional[str]:
+    """
+    Возвращает model если он валиден, иначе None.
+
+    Listing всё равно сохраняется (с model_id=NULL в БД через LEFT JOIN),
+    данные не теряются — просто не привязываются к мусорной модели.
+
+    Отсекаем:
+    - пусто / None / нестрока
+    - длина < 2 символов
+    - 4-значный год (попадает вместо модели когда name = "Brand 2020 г.")
+    - чистые цифры (например "2010" или "1234")
+    - совпадение с brand (kolesa возвращает "Toyota" / "Toyota" когда
+      submodel не извлекли — синтетическая привязка ухудшает аналитику)
+    """
+    if not model or not isinstance(model, str):
+        return None
+    cleaned = model.strip()
+    if len(cleaned) < 2:
+        return None
+    # 4-значный год → не модель
+    if re.fullmatch(r"\d{4}", cleaned):
+        return None
+    # Чисто цифры → подозрительно (модели обычно содержат буквы)
+    if cleaned.replace("-", "").replace(" ", "").isdigit():
+        return None
+    # Совпадение с brand — kolesa так делает когда не извлёк submodel
+    if brand and cleaned.lower() == brand.strip().lower():
+        return None
+    return cleaned
+
+
 def _parse_engine_volume(raw) -> Optional[int]:
     """Convert engine volume to cc. Accepts '2.0', 2.0 (litres) → 2000 cc."""
     if raw is None:
@@ -229,20 +261,39 @@ def _parse_item(obj: dict) -> Optional[dict]:
         external_id = str(obj.get("id", "")) or None
         name = obj.get("name", "")
 
-        # name: "Toyota Camry 2022 г." → brand=Toyota, model=Camry, year=2022
+        # name: "Toyota Land Cruiser Prado 2018 г." → brand=Toyota, model="Land Cruiser Prado", year=2018
+        # Стратегия: brand = первое слово; model = всё между brand и 4-значным годом;
+        # year = 4-значное число в диапазоне 1990..2030.
         parts = name.split()
         brand = parts[0] if parts else None
-        model = parts[1] if len(parts) > 1 else None
         year = None
-        for p in parts:
+        year_idx: Optional[int] = None
+        for j, p in enumerate(parts):
             if re.fullmatch(r"\d{4}", p) and 1990 <= int(p) <= 2030:
                 year = int(p)
+                year_idx = j
                 break
+        # Title-derived model: всё между brand-словом и годом
+        title_model = None
+        if year_idx is not None and year_idx > 1:
+            title_model = " ".join(parts[1:year_idx]).strip()
+        elif len(parts) > 1:
+            title_model = parts[1]
 
-        # Из attributes — точнее для марки/модели и богатые данные
+        # Из attributes — brand точнее (полные имена брендов), но model часто single-word
+        # сокращение (kolesa отдаёт "Land" вместо "Land Cruiser"). Поэтому выбираем
+        # самый длинный (по числу слов) из доступных кандидатов.
         attrs = obj.get("attributes") or {}
         brand = attrs.get("brand") or brand
-        model = attrs.get("model") or model
+        attr_model = attrs.get("model")
+
+        candidates = [m for m in (title_model, attr_model) if m and isinstance(m, str)]
+        model = max(candidates, key=lambda m: len(m.split())) if candidates else None
+
+        # Валидация — отсекаем синтетические модели (год, =brand, цифры).
+        # При невалидной — model=None → listing сохранится без model_id (LEFT JOIN),
+        # данные сохраняются, но мусорные привязки не плодятся.
+        model = _validate_model(model, brand)
 
         price_kzt = obj.get("unitPrice")
 
@@ -313,6 +364,8 @@ def _parse_item(obj: dict) -> Optional[dict]:
             "external_id": external_id,
             "brand_slug": _slug(brand),
             "model_slug": _slug(model),
+            "brand_name": brand,
+            "model_name": model,
             "title": name,
             "year": year,
             "price_kzt": price_kzt,
