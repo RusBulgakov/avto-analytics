@@ -90,6 +90,10 @@ CREATE TABLE IF NOT EXISTS listings (
     first_seen_at       TIMESTAMPTZ DEFAULT NOW(),
     last_seen_at        TIMESTAMPTZ DEFAULT NOW(),
     closed_at           TIMESTAMPTZ,               -- когда объявление исчезло (продано)
+    -- Quality flags (заполняются parsers/kolesa/flags.py из ?need-repair=1 / ?auto-custom=1)
+    is_emergency        BOOLEAN DEFAULT NULL,      -- TRUE = аварийная или не на ходу
+    is_customs_cleared  BOOLEAN DEFAULT NULL,      -- FALSE = не растаможен
+    flags_updated_at    TIMESTAMPTZ DEFAULT NULL,  -- когда последний раз обновляли флаги
     UNIQUE (source_id, external_id)
 );
 
@@ -99,6 +103,9 @@ CREATE INDEX idx_listings_year ON listings(year);
 CREATE INDEX idx_listings_city ON listings(city);
 CREATE INDEX idx_listings_is_active ON listings(is_active);
 CREATE INDEX idx_listings_first_seen ON listings(first_seen_at);
+-- Partial indexes — только для "плохих" listings (TRUE / FALSE) — отбрасываем NULL/нормальные
+CREATE INDEX IF NOT EXISTS idx_listings_is_emergency ON listings(is_emergency) WHERE is_emergency = TRUE;
+CREATE INDEX IF NOT EXISTS idx_listings_is_customs_cleared ON listings(is_customs_cleared) WHERE is_customs_cleared = FALSE;
 
 -- =============================================
 -- ИСТОРИЯ ЦЕН
