@@ -62,6 +62,44 @@ UPDATE listings l SET model_id = NULL FROM models m
 
 ---
 
+## 2026-04-26 — Junk-listing filter: аварийные / не на ходу / не растаможенные
+
+### Why
+Юзер увидел в `/profitability` BMW 525 1994 с margin 73% — фантом. Причина: kolesa.kz парсит **всё подряд**, включая аварийные / не на ходу / не растаможенные / на запчасти. Битый BMW за 600k вместе с целыми за 1.6M ломает p25 (buy_price) — оценка маржи получается мусорной.
+
+### Added
+- **`include_junk: bool = False`** query-param в 3 endpoint'ах:
+  - **`/profit-ranking`** — title-keyword filter + **price-outlier filter** (median ± [0.5x, 2x] per group). Выкидывает листинги ниже 50% медианы группы (битые / не растаможенные) и выше 200% (typos / эксклюзивные комплектации).
+  - **`/price-boxplot`** — только title-keyword filter (boxplot и так показывает разброс — outlier filter избыточен).
+  - **`/market-overview`** — title-keyword filter (avg price корректнее).
+
+- **Toggle "Товарные / Все"** в `frontend/pages/profitability.tsx` — позволяет переключиться на raw данные если нужно. Default = "Товарные" (junk excluded). Под page-sub небольшой бейдж `★ исключены аварийные / не на ходу / не растаможенные / на запчасти + price-outliers` пока в "Товарные"-режиме — прозрачность для пользователя.
+
+### Filter logic
+```
+title NOT ILIKE ALL(ARRAY[
+  '%не на ходу%', '%аварий%', '%битая%', '%битый%',
+  '%не растамож%', '%не растам%', '%без документ%',
+  '%на запчасти%', '%по запчастям%', '%разбит%',
+  '%восстанов%', '%утоплен%', '%горел%'
+])
++ price BETWEEN group_median * 0.5 AND group_median * 2.0  (только для profit-ranking)
+```
+
+### Impact (validated с прода)
+До/после junk-filter в /profit-ranking (top-1 по марже):
+- **BMW 525 1994**: margin **73.3%** → реалистичные **43.8%** (vol 26 → 23, buy 1.24M → 1.60M)
+- **Mitsubishi Galant 1997 (71.4% margin)** — full junk, выпал из топа
+- **Daewoo Nexia 2006 (58.3%)** — full junk, выпал
+- Топ теперь в honest 40-58% margin диапазоне vs фантомные 60-75%.
+
+Title-keyword filter ловит только **6 listings** в БД (0.01%) — потому что kolesa в title пишет только "Brand Model Год г." без описаний. Sellers пишут "не на ходу" в OLX/mycar (где title содержит description). Зато **price-outlier filter** ловит kolesa-junk через ценовые аномалии.
+
+### Не покрыто (TODO для бэклога)
+- Парсинг **detail-страниц kolesa** (`/a/show/{id}`) для извлечения реальных флагов `is_emergency`, `is_customs_cleared`, `runs` в схему `listings`. Сейчас kolesa search-JSON флаги не отдаёт. Это бы дало **точный** фильтр вместо эвристики, но цена — 53k extra HTTP запросов на каждый прогон. Альтернатива — парсить только когда `last_seen_at < N часов`, чтобы amortized cost был меньше.
+
+---
+
 ## 2026-04-26 — Mobile responsive pass
 
 ### Added

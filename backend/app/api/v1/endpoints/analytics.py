@@ -332,12 +332,23 @@ async def market_overview(
     source: list[str] = Query(None),
     year: list[int] = Query(None),
     include_inactive: bool = Query(False, description="Считать также снятые объявления"),
+    include_junk: bool = Query(
+        False,
+        description="Учитывать junk-listings (аварийные / не на ходу / не растаможенные / на запчасти). По умолчанию исключены — иначе средняя цена занижена.",
+    ),
 ):
     """Топ-20 марок по количеству объявлений + средняя цена. С учетом фильтров."""
 
     conditions = []
     if not include_inactive:
         conditions.append("l.is_active = TRUE")
+    if not include_junk:
+        conditions.append("""l.title NOT ILIKE ALL(ARRAY[
+            '%не на ходу%', '%аварий%', '%битая%', '%битый%',
+            '%не растамож%', '%не растам%', '%без документ%',
+            '%на запчасти%', '%по запчастям%', '%разбит%',
+            '%восстанов%', '%утоплен%', '%горел%'
+          ])""")
     params = []
     i = 1
 
@@ -401,6 +412,10 @@ async def get_price_boxplot(
     source: list[str] = Query(None),
     year: list[int] = Query(None),
     include_inactive: bool = Query(False, description="Учитывать снятые объявления"),
+    include_junk: bool = Query(
+        False,
+        description="Учитывать аварийные / не на ходу / не растаможенные / на запчасти. По умолчанию исключены — иначе boxplot уши уходят далеко вниз и picture неинформативная.",
+    ),
 ):
     """
     Без brand_id → топ-10 марок по количеству объявлений.
@@ -408,9 +423,24 @@ async def get_price_boxplot(
     Возвращает min, Q1, median, Q3, max + count (совпадает с market-overview).
     """
     active_filter = "" if include_inactive else "AND l.is_active = TRUE"
+    junk_keyword_clause = "" if include_junk else """
+          AND l.title NOT ILIKE ALL(ARRAY[
+            '%не на ходу%', '%аварий%', '%битая%', '%битый%',
+            '%не растамож%', '%не растам%', '%без документ%',
+            '%на запчасти%', '%по запчастям%', '%разбит%',
+            '%восстанов%', '%утоплен%', '%горел%'
+          ])
+    """
     conditions = ["ph.price_kzt > 0"]
     if not include_inactive:
         conditions.append("l.is_active = TRUE")
+    if not include_junk:
+        conditions.append("""l.title NOT ILIKE ALL(ARRAY[
+            '%не на ходу%', '%аварий%', '%битая%', '%битый%',
+            '%не растамож%', '%не растам%', '%без документ%',
+            '%на запчасти%', '%по запчастям%', '%разбит%',
+            '%восстанов%', '%утоплен%', '%горел%'
+          ])""")
     params: list = []
     i = 1
 
@@ -433,6 +463,7 @@ async def get_price_boxplot(
                 FROM models m
                 JOIN listings l ON l.model_id = m.id
                 WHERE 1=1 {active_filter} {brand_filter}
+                  {junk_keyword_clause}
                 GROUP BY m.id, m.name
                 ORDER BY listing_count DESC
                 LIMIT 10
@@ -470,6 +501,7 @@ async def get_price_boxplot(
                 FROM brands b
                 JOIN listings l ON l.brand_id = b.id
                 WHERE 1=1 {active_filter}
+                  {junk_keyword_clause}
                 GROUP BY b.id, b.name
                 ORDER BY listing_count DESC
                 LIMIT 10
@@ -1010,6 +1042,14 @@ async def get_profit_ranking(
     min_volume: int = Query(10, ge=3, le=200, description="Мин. число активных объявлений"),
     year_from: int = Query(None, ge=1990, le=2030, description="Год выпуска от"),
     year_to: int = Query(None, ge=1990, le=2030, description="Год выпуска до"),
+    include_junk: bool = Query(
+        False,
+        description=(
+            "Учитывать ли мусорные листинги: аварийные / не на ходу / не растаможенные / "
+            "на запчасти. По умолчанию они исключены — иначе ломают p25 (buy_price) "
+            "и порождают фантомную маржу. Title-keyword + price-outlier filter."
+        ),
+    ),
 ):
     """
     Возвращает топ-N моделей по оценочной марже перепродажи.
@@ -1035,6 +1075,30 @@ async def get_profit_ranking(
         params.append(year_to)
         year_filter += f" AND l.year <= ${len(params)}"
 
+    # Junk-фильтр: исключаем листинги, чьё title явно говорит "битая / на запчасти /
+    # не растаможен / аварийная". Sellers на OLX/mycar часто пишут это в title.
+    # На kolesa title чище (только "Brand Model Год г."), но фильтр безопасен — он
+    # просто не матчит kolesa-listings. Для kolesa работает price-outlier фильтр ниже.
+    junk_keyword_filter = "" if include_junk else """
+          AND l.title NOT ILIKE ALL(ARRAY[
+            '%не на ходу%', '%аварий%', '%битая%', '%битый%',
+            '%не растамож%', '%не растам%', '%без документ%',
+            '%на запчасти%', '%по запчастям%', '%разбит%',
+            '%восстанов%', '%утоплен%', '%горел%'
+          ])
+    """
+
+    # Outlier-фильтр: цены < 50% и > 200% от median группы (brand+model+year)
+    # отбрасываются перед расчётом percentile. Это убирает на kolesa листинги,
+    # которые продают аварийные/без документов за 30-50% от рынка (фейковые
+    # buy_price → фантомная маржа), и эксклюзивные комплектации/typos сверху.
+    # Структура: priced → group_med (median per group) → clean (within band).
+    outlier_filter_sql = ""
+    if include_junk:
+        outlier_filter_sql = "  -- include_junk: true → outlier filter отключён"
+    else:
+        outlier_filter_sql = "WHERE p.price_kzt BETWEEN g.m_price * 0.5 AND g.m_price * 2.0"
+
     query = f"""
         WITH latest AS (
             SELECT DISTINCT ON (listing_id) listing_id, price_kzt
@@ -1054,32 +1118,50 @@ async def get_profit_ranking(
               AND l.closed_at > l.first_seen_at
               AND l.closed_at >= NOW() - INTERVAL '180 day'
             GROUP BY l.brand_id, l.model_id, l.year
+        ),
+        priced AS (
+            SELECT l.id, l.brand_id, l.model_id, l.year, latest.price_kzt
+            FROM listings l
+            JOIN latest ON latest.listing_id = l.id
+            JOIN brands b ON b.id = l.brand_id
+            JOIN models m ON m.id = l.model_id
+            WHERE l.is_active = TRUE AND l.year IS NOT NULL{year_filter}
+              AND m.name NOT LIKE '(%'
+              AND LOWER(m.name) <> LOWER(b.name)
+              {junk_keyword_filter}
+        ),
+        group_med AS (
+            SELECT brand_id, model_id, year,
+                   PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price_kzt) AS m_price
+            FROM priced
+            GROUP BY brand_id, model_id, year
+        ),
+        clean AS (
+            SELECT p.*
+            FROM priced p
+            JOIN group_med g
+              ON g.brand_id = p.brand_id AND g.model_id = p.model_id AND g.year = p.year
+            {outlier_filter_sql}
         )
         SELECT
             b.name AS brand,
             m.name AS model,
-            l.year::int AS year,
+            c.year::int AS year,
             COUNT(*)::int AS volume,
-            PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY latest.price_kzt)::bigint AS buy_price,
-            PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY latest.price_kzt)::bigint AS sell_price,
-            PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY latest.price_kzt)::bigint AS high_price,
+            PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY c.price_kzt)::bigint AS buy_price,
+            PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY c.price_kzt)::bigint AS sell_price,
+            PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY c.price_kzt)::bigint AS high_price,
             sold.median_days
-        FROM listings l
-        JOIN latest ON latest.listing_id = l.id
-        JOIN brands b ON b.id = l.brand_id
-        JOIN models m ON m.id = l.model_id
-        LEFT JOIN sold ON sold.brand_id = l.brand_id AND sold.model_id = l.model_id AND sold.year = l.year
-        WHERE l.is_active = TRUE AND l.year IS NOT NULL{year_filter}
-          -- Отфильтровываем мусорные модели парсера: "(Lada)", "(Toyota)" и кейсы где
-          -- модель == имя бренда (когда parser не извлёк реальную submodel).
-          AND m.name NOT LIKE '(%'
-          AND LOWER(m.name) <> LOWER(b.name)
-        GROUP BY b.name, m.name, l.year, sold.median_days
+        FROM clean c
+        JOIN brands b ON b.id = c.brand_id
+        JOIN models m ON m.id = c.model_id
+        LEFT JOIN sold ON sold.brand_id = c.brand_id AND sold.model_id = c.model_id AND sold.year = c.year
+        GROUP BY b.name, m.name, c.year, sold.median_days
         HAVING COUNT(*) >= $1
         ORDER BY
-            ((PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY latest.price_kzt) -
-              PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY latest.price_kzt))
-             / NULLIF(PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY latest.price_kzt), 0)) DESC NULLS LAST
+            ((PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY c.price_kzt) -
+              PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY c.price_kzt))
+             / NULLIF(PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY c.price_kzt), 0)) DESC NULLS LAST
         LIMIT $2
     """
     async with DBSession() as conn:

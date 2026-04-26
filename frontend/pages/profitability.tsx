@@ -37,14 +37,18 @@ export default function ProfitabilityPage() {
     const [limit, setLimit] = useState(50);
     const [yearFrom, setYearFrom] = useState<number | null>(null);
     const [yearTo, setYearTo] = useState<number | null>(null);
+    // Default false → не показываем аварийные / не на ходу / не растаможенные.
+    // Пользователь может выбрать "Все" если хочет видеть raw-распределение.
+    const [includeJunk, setIncludeJunk] = useState(false);
 
     const { data, isLoading } = useSWR<ProfitRow[]>(
-        ['profit-ranking', minVol, limit, yearFrom, yearTo],
+        ['profit-ranking', minVol, limit, yearFrom, yearTo, includeJunk],
         () => analyticsApi.getProfitRanking({
             min_volume: minVol,
             limit,
             ...(yearFrom && { year_from: yearFrom }),
             ...(yearTo   && { year_to:   yearTo   }),
+            ...(includeJunk ? { include_junk: true } : {}),
         }),
         { keepPreviousData: true }
     );
@@ -72,6 +76,40 @@ export default function ProfitabilityPage() {
                             <div className="page-title">Рейтинг рентабельности</div>
                             <div className="page-sub">
                                 Оценка маржи = медиана − нижний квартиль цен по модели. Риск учитывает объём выборки.
+                                {!includeJunk && (
+                                    <>
+                                        {' · '}
+                                        <span style={{ color: 'var(--up)' }}>
+                                            ★ исключены аварийные / не на ходу / не растаможенные / на запчасти + price-outliers
+                                        </span>
+                                    </>
+                                )}
+                            </div>
+                            <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
+                                <span
+                                    className="uppercase"
+                                    style={{ fontSize: 11, color: 'var(--text-muted)' }}
+                                >
+                                    выборка
+                                </span>
+                                <div className="period-group" role="group" aria-label="Junk-фильтр">
+                                    <button
+                                        type="button"
+                                        className={`period-btn ${!includeJunk ? 'active' : ''}`}
+                                        onClick={() => setIncludeJunk(false)}
+                                        title="Только товарные: без битых/не на ходу/не растаможенных + outliers ниже 50% медианы"
+                                    >
+                                        Товарные
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className={`period-btn ${includeJunk ? 'active' : ''}`}
+                                        onClick={() => setIncludeJunk(true)}
+                                        title="Без фильтра — raw данные включая аварийные, не на ходу, не растаможенные"
+                                    >
+                                        Все
+                                    </button>
+                                </div>
                             </div>
                         </div>
 
