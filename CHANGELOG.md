@@ -62,7 +62,24 @@ UPDATE listings l SET model_id = NULL FROM models m
 
 ---
 
-## 2026-04-26 — Multi-word model names ("Land Cruiser Prado", не просто "Land")
+## 2026-04-26 — Распространение `brand_name`/`model_name` на остальные парсеры
+
+### Changed
+- **`parsers/mycar/parser.py`**, **`parsers/olx/parser.py`**, **`parsers/newauto/parser.py`**, **`parsers/avtorynok/parser.py`** теперь возвращают в data dict явные поля `brand_name` и `model_name` (раньше передавали только `*_slug` + `title`, db.py приходилось вытаскивать имя из title через split-фолбэк). Симметрия с уже-обновлённым `parsers/kolesa/parser.py`.
+
+### Why
+`save_listing` в `parsers/common/db.py` (после фикса `9250e23`) предпочитает `data.get("model_name")` над title-split. Если парсер передаёт его — БД получает наиболее точное имя. Этот коммит делает 4 оставшихся парсера консистентными — теперь все 5 источников питают БД одинаково богатой meta-информацией о моделях, и фолбэк на title-split в `save_listing` остаётся только для обратной совместимости (если кто-то добавит шестой парсер и забудет про эти поля).
+
+### Audit-fix в CHANGELOG (без code changes)
+4 моих предыдущих заголовка не имели SHA-anchor по правилу `CLAUDE.md` (формат `YYYY-MM-DD — описание (sha)`). Добавлены:
+- `2026-04-26 — Multi-word model names` → `9250e23`
+- `2026-04-26 — Profitability: filter garbage model names` → `fb31179`
+- `2026-04-26 — Time-aggregated charts` → `bfc4802`
+- `2026-04-22 — Active/All toggle` → `7737f95`
+
+---
+
+## 2026-04-26 — Multi-word model names — `Land Cruiser Prado`, не просто `Land` (`9250e23`)
 
 ### Fixed
 - **Parser kolesa (`parsers/kolesa/parser.py::_parse_item`)** — извлекает model из title как **всё между brand и 4-значным годом**, вместо `parts[1]` (наивный). Title `"Toyota Land Cruiser Prado 2018 г."` → `model = "Land Cruiser Prado"`, не "Land".
@@ -97,7 +114,7 @@ UPDATE listings l SET model_id = NULL FROM models m
 
 ---
 
-## 2026-04-26 — Profitability: filter garbage model names
+## 2026-04-26 — Profitability: filter garbage model names (`fb31179`)
 
 ### Changed
 - **`/profit-ranking` SQL** теперь отфильтровывает мусорные модели в `WHERE`-clause:
@@ -112,7 +129,7 @@ UPDATE listings l SET model_id = NULL FROM models m
 
 ---
 
-## 2026-04-26 — Time-aggregated charts: weekly price-history + price-candles widget
+## 2026-04-26 — Time-aggregated charts: weekly price-history + price-candles widget (`bfc4802`)
 
 ### Added
 - **`/api/v1/analytics/price-candles`** — новый endpoint, возвращает квартили цен (P5/Q1/median/Q3/P95) по временным бакетам. Параметры: `period_days` (14–730, default 180), `granularity` ('auto'|'day'|'week'|'month', auto = week для ≤90д иначе month), `min_count` (минимум точек в бакете, default 5), плюс стандартные фильтры (brand_id, model_id, city, source, include_inactive). Ответ: `{granularity, candles: [{date, count, whisker_low, p25, median, p75, whisker_high}]}`.
@@ -133,7 +150,7 @@ UPDATE listings l SET model_id = NULL FROM models m
 
 ---
 
-## 2026-04-22 — Active/All toggle (исторический режим)
+## 2026-04-22 — Active/All toggle (исторический режим) (`7737f95`)
 
 ### Added
 - **`include_inactive: bool` query param** добавлен в 9 backend endpoints: `/brands`, `/models`, `/summary`, `/market-overview`, `/price-history`, `/price-boxplot`, `/heatmap`, `/cities`, `/geo`. По умолчанию `false` → старое поведение (только `is_active=TRUE`). При `true` фильтр снимается → возвращаются все объявления когда-либо собранные парсером.

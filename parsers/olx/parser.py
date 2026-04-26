@@ -89,6 +89,8 @@ def _parse_card(card) -> Optional[dict]:
             "external_id": external_id,
             "brand_slug": _slug(brand),
             "model_slug": _slug(model),
+            "brand_name": brand,
+            "model_name": model,
             "title": title_text,
             "year": year,
             "price_kzt": price_kzt,
