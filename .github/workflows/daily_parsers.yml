@@ -105,12 +105,19 @@ jobs:
           PARSER_MAX_RETRIES: 3
 
   # ─────────────────────────────────────────
-  # Шаг 3: Деактивация старых объявлений
+  # Шаг 3: Деактивация старых объявлений (light-парсеры)
   # ─────────────────────────────────────────
-  # Запускается ТОЛЬКО при успешном завершении парсеров.
+  # Запускается ТОЛЬКО при успешном завершении light-парсеров.
   # Иначе сохраняем существующие данные — лучше немного stale, чем потерять всё.
+  #
+  # CRITICAL: deactivate ИСКЛЮЧАЕТ kolesa (DEACTIVATE_EXCLUDE_SOURCES=kolesa).
+  # Причина: этот workflow не парсит kolesa (он запускается каждые 6 часов).
+  # Если kolesa_full упал → kolesa-объявления стареют → этот deactivate
+  # массово сносил свежие данные kolesa (53k → 49k active за один прогон).
+  # Свой deactivate для kolesa живёт в kolesa_full.yml и работает только
+  # после успешного прогона ВСЕХ 3 шардов.
   deactivate-old:
-    name: 🧹 Deactivate Old Listings
+    name: 🧹 Deactivate Old Listings (non-kolesa)
     needs: parse-all
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -127,9 +134,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r parsers/requirements.txt
 
-      - name: Deactivate old listings
+      - name: Deactivate old listings (excluding kolesa)
         run: python -m parsers.common.deactivate
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Не трогаем kolesa: его deactivate живёт в kolesa_full.yml.
+          # Иначе падение тяжёлого парсера убивает 4k+ активных объявлений.
+          DEACTIVATE_EXCLUDE_SOURCES: kolesa

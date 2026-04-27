@@ -4,6 +4,32 @@
 
 ---
 
+## 2026-04-27 — Source-aware deactivate: остановили падение active count (<commit-sha>)
+
+### Fixed
+- **Cross-workflow deactivate kill** — `daily_parsers.yml::deactivate-old` сносил kolesa-объявления при падении тяжёлого парсера. После cancellation kolesa-шардов их `last_seen_at` стареет на >168h, и следующий же успешный прогон light-парсеров (mycar/newauto/avtorynok/olx) триггерил `deactivate_old_listings()` для **всех** source — включая kolesa. Active count упал 53k → 49k за один прогон. Корень: `deactivate_old_listings` не имела фильтра по source.
+
+### Added
+- **`parsers/common/db.py::deactivate_old_listings`** — два новых kwarg:
+  - `source: str | None` — деактивировать только этот source (по `sources.name`).
+  - `exclude_sources: list[str] | None` — деактивировать всё **кроме** перечисленных.
+  - Backward-compatible: оба `None` → старое поведение (deactivate ВСЕГО).
+- **`parsers/common/deactivate.py`** — читает env-переменные:
+  - `DEACTIVATE_SOURCE` — single-source mode.
+  - `DEACTIVATE_EXCLUDE_SOURCES` — comma-separated exclude list.
+  - Логирует scope в stdout (`source=kolesa` / `all EXCEPT kolesa` / `all sources`).
+
+### Changed
+- **`.github/workflows/daily_parsers.yml`**: `deactivate-old` теперь запускается с `DEACTIVATE_EXCLUDE_SOURCES=kolesa`. Этот workflow не парсит kolesa, поэтому не имеет права деактивировать его данные.
+- **`.github/workflows/kolesa_full.yml`**: `deactivate-old` теперь запускается с `DEACTIVATE_SOURCE=kolesa`. Скоупим только свой source — иначе после успешного kolesa_full сносило бы свежие mycar/olx, у которых своё расписание.
+
+### Impact
+- Падение kolesa-парсера больше не сносит его свежие объявления через 168h.
+- Каждый workflow отвечает только за деактивацию своего source — нет cross-workflow блока данных.
+- Manual-запуск `python -m parsers.common.deactivate` без env остался прежним (deactivate всех).
+
+---
+
 ## 2026-04-26 — Kolesa parser: безотказность + охват + Telegram прогресс-бар (1b3e30a)
 
 ### Added

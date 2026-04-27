@@ -312,7 +312,12 @@ async def save_listing(conn: asyncpg.Connection, data: dict) -> str:
     return listing_id, is_new
 
 
-async def deactivate_old_listings(conn: asyncpg.Connection, hours_threshold: int = 168) -> int:
+async def deactivate_old_listings(
+    conn: asyncpg.Connection,
+    hours_threshold: int = 168,
+    source: str | None = None,
+    exclude_sources: list[str] | None = None,
+) -> int:
     """
     Деактивирует объявления, которые не обновлялись больше `hours_threshold` часов.
     Проставляет is_active = FALSE и closed_at = NOW().
@@ -324,15 +329,34 @@ async def deactivate_old_listings(conn: asyncpg.Connection, hours_threshold: int
     и их живые объявления ошибочно помечались неактивными после 2 суток.
     С 7-дневным окном живые объявления успевают попасть хотя бы в один из
     4 ежедневных проходов парсера.
+
+    Args:
+        source:           если задан — деактивируем ТОЛЬКО этот source (по name).
+                          Используется в kolesa_full.yml: deactivate-old должен
+                          трогать только kolesa, чтобы не задеть свежие mycar/olx.
+        exclude_sources:  если задан — деактивируем ВСЁ КРОМЕ этих sources.
+                          Используется в daily_parsers.yml: kolesa исключается,
+                          чтобы падение тяжёлого парсера не убивало живые kolesa-
+                          объявления (его deactivate живёт в kolesa_full.yml).
+
+    Если оба параметра не заданы — поведение как раньше: deactivate ВСЕХ source
+    (для CLI вызова и совместимости).
     """
-    closed_count = await conn.execute(
-        """
+    sql = """
         UPDATE listings
         SET is_active = FALSE, closed_at = NOW()
-        WHERE is_active = TRUE 
+        WHERE is_active = TRUE
           AND last_seen_at < NOW() - make_interval(hours := $1)
-        """,
-        hours_threshold
-    )
+    """
+    params: list = [hours_threshold]
+
+    if source:
+        sql += " AND source_id = (SELECT id FROM sources WHERE name = $2)"
+        params.append(source)
+    elif exclude_sources:
+        sql += " AND source_id NOT IN (SELECT id FROM sources WHERE name = ANY($2::text[]))"
+        params.append(exclude_sources)
+
+    closed_count = await conn.execute(sql, *params)
     # Returns a string like "UPDATE 15", we extract the number
     return int(float(closed_count.split()[1])) if closed_count.startswith("UPDATE") else 0

@@ -112,12 +112,16 @@ jobs:
       - name: Install dependencies
         run: pip install -r parsers/requirements.txt
 
-      - name: Deactivate old listings
+      - name: Deactivate old listings (kolesa only)
         run: python -m parsers.common.deactivate
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Скоупим только kolesa: остальные source живут на своём расписании
+          # в daily_parsers.yml. Без этого deactivate сносил свежие mycar/olx,
+          # если они отстали на 168ч (а они часто могут).
+          DEACTIVATE_SOURCE: kolesa
 
   # ─────────────────────────────────────────
   # Шаг 3: Auto-trigger alive_check после deactivate
