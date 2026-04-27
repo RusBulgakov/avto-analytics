@@ -4,7 +4,7 @@
 
 ---
 
-## 2026-04-27 — Kolesa: anti-bot rate-limit fix (2×2=4 simul, delay 5-10) (<commit-sha>)
+## 2026-04-27 — Kolesa: anti-bot rate-limit fix (2×2=4 simul, delay 5-10) (6afac4a)
 
 ### Fixed
 - **Накопительный IP-бан kolesa.kz** — эксперимент 04-26 с 3×2=6 simultaneous + delay 3-6 (avg 4.5) выдавал ~80 req/min. Парсер 4 часа работал нормально, потом kolesa начала возвращать `Timeout` на каждый запрос — накопительный rate-limit на наш Azure-IP. Все 3 шарда cancelled на GHA timeout без сохранения данных.
