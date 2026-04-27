@@ -4,6 +4,31 @@
 
 ---
 
+## 2026-04-27 — Kolesa: anti-bot rate-limit fix (2×2=4 simul, delay 5-10) (<commit-sha>)
+
+### Fixed
+- **Накопительный IP-бан kolesa.kz** — эксперимент 04-26 с 3×2=6 simultaneous + delay 3-6 (avg 4.5) выдавал ~80 req/min. Парсер 4 часа работал нормально, потом kolesa начала возвращать `Timeout` на каждый запрос — накопительный rate-limit на наш Azure-IP. Все 3 шарда cancelled на GHA timeout без сохранения данных.
+
+### Changed
+- **`.github/workflows/kolesa_full.yml`** — антибот-конфиг переразложен:
+  - **Шарды**: 3 → 2 (`matrix.shard_index: [0, 1, 2]` → `[0, 1]`).
+  - **Total simultaneous**: 6 → 4 (2 шарда × `KOLESA_CITY_CONCURRENCY=2`).
+  - **Request delay**: `PARSER_REQUEST_DELAY_MIN` 3→5, `MAX` 6→10. Avg 4.5 → 7.5.
+  - **Effective rate**: `simul/avg_delay` = 6/4.5=1.33 req/s (80 req/min) → 4/7.5=0.53 req/s (32 req/min). Снижение в **2.5×**.
+  - **`SHARD_COUNT` env default**: '3' → '2'.
+  - **Заголовочный комментарий** переписан с таблицей экспериментов 04-26 → 04-27.
+
+### Trade-offs
+- Wall-clock на шард: ~3.5ч → ~5–6ч (близко к hardcap 350 мин). `MIN_SAVED_THRESHOLD=1000` подстраховывает от cancellation-без-данных.
+- Каждый запрос медленнее, но **rate ниже** — kolesa не накапливает trigger.
+- Если 4 simultaneous всё равно банит — следующий шаг 3 simul (1×3 или 3×1) + delay 7-12.
+
+### Impact
+- Полный прогон должен укладываться в 5–6ч на шард, оба шарда параллельно → ~6ч wall-clock total.
+- После успеха обоих → `deactivate-old` (source=kolesa only, см. предыдущий entry).
+
+---
+
 ## 2026-04-27 — Source-aware deactivate: остановили падение active count (3d7d7d7)
 
 ### Fixed
