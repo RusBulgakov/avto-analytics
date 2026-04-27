@@ -4,7 +4,7 @@
 
 ---
 
-## 2026-04-27 — Source-aware deactivate: остановили падение active count (<commit-sha>)
+## 2026-04-27 — Source-aware deactivate: остановили падение active count (3d7d7d7)
 
 ### Fixed
 - **Cross-workflow deactivate kill** — `daily_parsers.yml::deactivate-old` сносил kolesa-объявления при падении тяжёлого парсера. После cancellation kolesa-шардов их `last_seen_at` стареет на >168h, и следующий же успешный прогон light-парсеров (mycar/newauto/avtorynok/olx) триггерил `deactivate_old_listings()` для **всех** source — включая kolesa. Active count упал 53k → 49k за один прогон. Корень: `deactivate_old_listings` не имела фильтра по source.
