@@ -222,16 +222,19 @@ async def get_profitability(
         # Прирост/падение цены за 30 и 90 дней
         price_change = await conn.fetch("""
             WITH latest AS (
-                SELECT l.id, MAX(ph.price_kzt) AS price_now
+                -- Самая свежая известная цена listing'а (без time-window).
+                -- price_history пополняется только при ИЗМЕНЕНИИ цены,
+                -- поэтому 3-day window терял ~67% стабильных listings.
+                SELECT DISTINCT ON (l.id) l.id, ph.price_kzt AS price_now
                 FROM listings l
                 JOIN price_history ph ON ph.listing_id = l.id
-                    AND ph.recorded_at >= NOW() - INTERVAL '3 day'
                 WHERE l.brand_id = ANY($1::int[])
                   AND ($2::int[] IS NULL OR l.model_id = ANY($2::int[]))
                   AND ($3::int[] IS NULL OR l.year = ANY($3::int[]))
-                GROUP BY l.id
+                ORDER BY l.id, ph.recorded_at DESC
             ),
             prev30 AS (
+                -- Цена 30 дней назад: окно ±3 дня сохраняем (нужна точка из прошлого)
                 SELECT l.id, MAX(ph.price_kzt) AS price_30d_ago
                 FROM listings l
                 JOIN price_history ph ON ph.listing_id = l.id
@@ -296,15 +299,23 @@ async def get_summary(
     where = " AND ".join(conditions) if conditions else "TRUE"
 
     async with DBSession() as conn:
+        # avg_price_kzt берём из САМОЙ СВЕЖЕЙ price_history записи каждого listing'а
+        # (без time-window). Раньше с window 3 day теряли ~67% kolesa-листингов
+        # со стабильной ценой → avg вычислялся на 33% выборки.
         counts = await conn.fetchrow(f"""
+             WITH latest_price AS (
+                 SELECT DISTINCT ON (listing_id) listing_id, price_kzt
+                 FROM price_history
+                 WHERE price_kzt > 0
+                 ORDER BY listing_id, recorded_at DESC
+             )
              SELECT
                 COUNT(DISTINCT l.id) as active_listings,
                 COUNT(DISTINCT l.brand_id) as total_brands,
-                ROUND(AVG(ph.price_kzt))::bigint as avg_price_kzt
+                ROUND(AVG(lp.price_kzt))::bigint as avg_price_kzt
              FROM listings l
              JOIN sources s ON s.id = l.source_id
-             LEFT JOIN price_history ph ON ph.listing_id = l.id
-                AND ph.recorded_at >= NOW() - INTERVAL '3 day'
+             LEFT JOIN latest_price lp ON lp.listing_id = l.id
              WHERE {where}
         """, *params)
 
@@ -367,20 +378,32 @@ async def market_overview(
 
     where = " AND ".join(conditions) if conditions else "TRUE"
 
+    # Latest-price CTE без time-window: price_history пополняется ТОЛЬКО при
+    # изменении цены, поэтому стабильные active listings без записи за 3 дня
+    # выпадали из avg/min/max. Свежесть гарантируется l.is_active=TRUE.
+    latest_cte = """
+        WITH latest_price AS (
+            SELECT DISTINCT ON (listing_id) listing_id, price_kzt
+            FROM price_history
+            WHERE price_kzt > 0
+            ORDER BY listing_id, recorded_at DESC
+        )
+    """
     async with DBSession() as conn:
         if brand_id and len(brand_id) == 1:
             # Если выбрана ровно одна марка, показываем топ моделей этой марки
             query = f"""
+                {latest_cte}
                 SELECT
                     m.name AS brand,
                     COUNT(DISTINCT l.id) AS active_listings,
-                    ROUND(AVG(ph.price_kzt))::bigint AS avg_price_kzt,
-                    MIN(ph.price_kzt) AS min_price_kzt,
-                    MAX(ph.price_kzt) AS max_price_kzt
+                    ROUND(AVG(lp.price_kzt))::bigint AS avg_price_kzt,
+                    MIN(lp.price_kzt) AS min_price_kzt,
+                    MAX(lp.price_kzt) AS max_price_kzt
                 FROM models m
                 JOIN listings l ON l.model_id = m.id
                 JOIN sources s ON s.id = l.source_id
-                LEFT JOIN price_history ph ON ph.listing_id = l.id AND ph.recorded_at >= NOW() - INTERVAL '3 day'
+                LEFT JOIN latest_price lp ON lp.listing_id = l.id
                 WHERE {where} AND l.brand_id = {brand_id[0]}
                 GROUP BY m.name
                 ORDER BY active_listings DESC
@@ -389,16 +412,17 @@ async def market_overview(
         else:
             # Иначе показываем топ марок
             query = f"""
+                {latest_cte}
                 SELECT
                     b.name AS brand,
                     COUNT(DISTINCT l.id) AS active_listings,
-                    ROUND(AVG(ph.price_kzt))::bigint AS avg_price_kzt,
-                    MIN(ph.price_kzt) AS min_price_kzt,
-                    MAX(ph.price_kzt) AS max_price_kzt
+                    ROUND(AVG(lp.price_kzt))::bigint AS avg_price_kzt,
+                    MIN(lp.price_kzt) AS min_price_kzt,
+                    MAX(lp.price_kzt) AS max_price_kzt
                 FROM brands b
                 JOIN listings l ON l.brand_id = b.id
                 JOIN sources s ON s.id = l.source_id
-                LEFT JOIN price_history ph ON ph.listing_id = l.id AND ph.recorded_at >= NOW() - INTERVAL '3 day'
+                LEFT JOIN latest_price lp ON lp.listing_id = l.id
                 WHERE {where}
                 GROUP BY b.name
                 ORDER BY active_listings DESC
@@ -830,15 +854,22 @@ async def get_geo(
     active_filter = "" if include_inactive else "AND l.is_active = TRUE"
     slugs = list(_CITY_COORDS.keys())
     async with DBSession() as conn:
+        # Latest-price без window: см. profit-ranking — price_history пишется
+        # только при изменении, 7-day window терял большинство listings.
         rows = await conn.fetch(f"""
+            WITH latest_price AS (
+                SELECT DISTINCT ON (listing_id) listing_id, price_kzt
+                FROM price_history
+                WHERE price_kzt > 0
+                ORDER BY listing_id, recorded_at DESC
+            )
             SELECT
                 LOWER(l.city) AS slug,
                 COUNT(DISTINCT l.id)::int AS listings,
-                ROUND(AVG(ph.price_kzt))::bigint AS avg_price_kzt
+                ROUND(AVG(lp.price_kzt))::bigint AS avg_price_kzt
             FROM listings l
             JOIN sources s ON s.id = l.source_id
-            LEFT JOIN price_history ph ON ph.listing_id = l.id
-                AND ph.recorded_at >= NOW() - INTERVAL '7 day'
+            LEFT JOIN latest_price lp ON lp.listing_id = l.id
             WHERE LOWER(l.city) = ANY($1::text[])
               {active_filter}
             GROUP BY LOWER(l.city)
@@ -1226,10 +1257,14 @@ async def get_profit_ranking(
 
     query = f"""
         WITH latest AS (
+            -- Берём ПОСЛЕДНЮЮ известную цену каждого listing'а без time-window'а.
+            -- save_listing пишет в price_history ТОЛЬКО при изменении цены, а active
+            -- listings со стабильной ценой могли последний раз фиксироваться 30+ дней
+            -- назад. С window 7d мы теряли 67% kolesa active (74k из 111k).
+            -- Свежесть гарантирует фильтр l.is_active=TRUE ниже.
             SELECT DISTINCT ON (listing_id) listing_id, price_kzt
             FROM price_history
-            WHERE recorded_at >= NOW() - INTERVAL '7 day'
-              AND price_kzt > 0
+            WHERE price_kzt > 0
             ORDER BY listing_id, recorded_at DESC
         ),
         sold AS (
