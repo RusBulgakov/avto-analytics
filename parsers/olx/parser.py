@@ -55,12 +55,130 @@ def _slug(text: Optional[str]) -> Optional[str]:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 
 
+# OLX titles написаны хаотично: Cyrillic/Latin/typos/префиксы. Нужен mapper
+# на канонический slug. Lookup по фразе lowercase, multi-word сначала.
+# 85% missing brand_id в БД ← брали `parts[0]` без валидации, попадало "Продам", "Срочно".
+BRAND_LOOKUP = {
+    # English (canonical)
+    'toyota': 'toyota', 'nissan': 'nissan', 'honda': 'honda',
+    'mazda': 'mazda', 'mitsubishi': 'mitsubishi', 'subaru': 'subaru',
+    'lexus': 'lexus', 'infiniti': 'infiniti', 'isuzu': 'isuzu',
+    'suzuki': 'suzuki', 'daihatsu': 'daihatsu', 'datsun': 'datsun',
+    'hyundai': 'hyundai', 'kia': 'kia', 'genesis': 'genesis',
+    'daewoo': 'daewoo', 'ravon': 'ravon', 'ssangyong': 'ssang-yong',
+    'bmw': 'bmw', 'volkswagen': 'volkswagen', 'audi': 'audi',
+    'opel': 'opel', 'porsche': 'porsche', 'mini': 'mini',
+    'mercedes': 'mercedes-benz', 'mercedes-benz': 'mercedes-benz',
+    'mercedes benz': 'mercedes-benz', 'mersedes': 'mercedes-benz',
+    'mersedes benz': 'mercedes-benz', 'mersedes-benz': 'mercedes-benz',
+    'renault': 'renault', 'peugeot': 'peugeot', 'citroen': 'citroen',
+    'fiat': 'fiat', 'maserati': 'maserati',
+    'chevrolet': 'chevrolet', 'ford': 'ford', 'cadillac': 'cadillac',
+    'dodge': 'dodge', 'jeep': 'jeep', 'chrysler': 'chrysler',
+    'lincoln': 'lincoln', 'gmc': 'gmc', 'hummer': 'hummer', 'tesla': 'tesla',
+    'land rover': 'land-rover', 'land-rover': 'land-rover',
+    'jaguar': 'jaguar', 'bentley': 'bentley', 'volvo': 'volvo',
+    'chery': 'chery', 'geely': 'geely', 'haval': 'haval',
+    'great wall': 'great-wall', 'great-wall': 'great-wall',
+    'byd': 'byd', 'changan': 'changan', 'jac': 'jac',
+    'omoda': 'omoda', 'jaecoo': 'jaecoo', 'jetour': 'jetour', 'exeed': 'exeed',
+    'vaz': 'vaz', 'lada': 'vaz', 'gaz': 'gaz', 'uaz': 'uaz', 'zaz': 'zaz',
+    'seat': 'seat', 'skoda': 'skoda', 'lifan': 'lifan',
+    # Russian Cyrillic (transliterations + slang)
+    'тойота': 'toyota', 'ниссан': 'nissan', 'хонда': 'honda',
+    'мазда': 'mazda', 'митсубиси': 'mitsubishi', 'митсубиши': 'mitsubishi',
+    'митсубиcи': 'mitsubishi', 'субару': 'subaru', 'лексус': 'lexus',
+    'инфинити': 'infiniti', 'сузуки': 'suzuki', 'судзуки': 'suzuki',
+    'хёндай': 'hyundai', 'хундай': 'hyundai', 'хундэ': 'hyundai',
+    'хюндай': 'hyundai', 'кия': 'kia', 'дэу': 'daewoo', 'дэо': 'daewoo',
+    'санг йонг': 'ssang-yong', 'санг-йонг': 'ssang-yong',
+    'бмв': 'bmw', 'фольксваген': 'volkswagen', 'фолькс': 'volkswagen',
+    'ауди': 'audi', 'опель': 'opel', 'порше': 'porsche',
+    'мерседес': 'mercedes-benz', 'мерседес-бенц': 'mercedes-benz',
+    'мерседес бенц': 'mercedes-benz', 'мерс': 'mercedes-benz',
+    'рено': 'renault', 'пежо': 'peugeot', 'ситроен': 'citroen', 'фиат': 'fiat',
+    'шевроле': 'chevrolet', 'шеви': 'chevrolet',
+    'форд': 'ford', 'кадиллак': 'cadillac', 'крайслер': 'chrysler',
+    'додж': 'dodge', 'джип': 'jeep', 'хаммер': 'hummer', 'тесла': 'tesla',
+    'лэнд ровер': 'land-rover', 'лэнд-ровер': 'land-rover',
+    'ленд ровер': 'land-rover', 'ленд-ровер': 'land-rover',
+    'ягуар': 'jaguar', 'бентли': 'bentley', 'вольво': 'volvo',
+    'чери': 'chery', 'джили': 'geely', 'хавал': 'haval', 'хавэйл': 'haval',
+    'грейт волл': 'great-wall', 'грейт-волл': 'great-wall',
+    'бид': 'byd', 'чанган': 'changan',
+    'ваз': 'vaz', 'лада': 'vaz', 'жигули': 'vaz',
+    'газ': 'gaz', 'уаз': 'uaz', 'москвич': 'moskvich',
+    'шкода': 'skoda', 'сеат': 'seat',
+}
+
+# Префиксы которые юзеры ставят перед маркой — игнорируем при матчинге
+JUNK_PREFIXES = {
+    'продам', 'продаю', 'продается', 'продается', 'срочно', 'обмен',
+    'торг', 'куплю', 'продается:', 'продается!', 'продаётся',
+}
+
+
+def _extract_brand_and_model(title: str) -> tuple[Optional[str], Optional[str]]:
+    """
+    Из title типа "Продам Kia Carens 2014" / "Мерседес С-220 кузов 202" /
+    "Mersedes benz W224" возвращает (canonical_brand_slug, model_text)
+    либо (None, None) если бренд не распознан.
+    """
+    if not title:
+        return None, None
+    norm = title.lower()
+    # Убираем диакритику для надёжности (ё→е и т.п.)
+    norm = norm.replace('ё', 'е')
+    words = re.split(r"[\s,]+", norm)
+    # Стрипаем junk-префиксы
+    while words and words[0] in JUNK_PREFIXES:
+        words.pop(0)
+    if not words:
+        return None, None
+
+    # Ищем бренд: сначала 2-слово (Mercedes Benz, Land Rover), потом 1-слово.
+    # Также пробуем не только parts[0], а сканируем первые 3 позиции —
+    # на случай "Срочно продам Kia Carens" где не всё убрали JUNK_PREFIXES.
+    for start in range(min(3, len(words))):
+        for n in (2, 1):
+            if start + n <= len(words):
+                phrase = ' '.join(words[start:start + n])
+                slug = BRAND_LOOKUP.get(phrase)
+                if slug:
+                    # Модель — следующее за брендом, до года/мусора
+                    model_words = words[start + n:]
+                    model_clean = []
+                    for w in model_words:
+                        if re.fullmatch(r"(19|20)\d{2}г?\.?", w):
+                            break
+                        # Стопаем на чисто-русских "продам", "состояние" итп
+                        if w in JUNK_PREFIXES or w in {'года', 'г.', 'года.', '-'}:
+                            continue
+                        model_clean.append(w)
+                    model_text = ' '.join(model_clean).strip(' ,.-') or None
+                    if model_text and len(model_text) > 50:
+                        # Подозрительно длинная "модель" (юзер вписал описание) — отрезаем
+                        model_text = model_text.split()[0]
+                    return slug, model_text
+    return None, None
+
+
 def _parse_price(raw: str) -> Optional[int]:
     digits = re.sub(r"\D", "", raw)
     return int(digits) if digits else None
 
 
 def _parse_card(card) -> Optional[dict]:
+    """
+    Парсит одну карточку OLX. Структура (стабильна на 2026-05):
+      [data-cy='l-card'] — корневой div
+        ├── id="<numeric_id>"           ← OLX numeric ID, fallback к external_id
+        ├── a[href]                      ← ссылка с IDxxx внутри
+        ├── p[0]                         ← TITLE
+        ├── p[1]                         ← location-date ("Город - 02 апреля 2026 г.")
+        ├── p[2]                         ← year + mileage ("2014  - 354 000 км")
+        ├── [data-testid='ad-price']     ← price ("1 700 000 тг.")
+    """
     try:
         link_tag = card.select_one("a[href]")
         if not link_tag:
@@ -69,53 +187,59 @@ def _parse_card(card) -> Optional[dict]:
         if not url.startswith("http"):
             url = BASE_URL + url
 
-        # ID из URL вида /d/obyavlenie/.../IDqMNaw.html
-        # OLX перешёл с числовых ID (ID12345) на буквенно-цифровые (IDqMNaw)
+        # external_id: предпочитаем regex по URL (формат /d/.../IDxxx.html),
+        # fallback на numeric id атрибут карточки.
         id_match = re.search(r"ID([A-Za-z0-9]+)", url)
-        external_id = id_match.group(1) if id_match else None
+        external_id = id_match.group(1) if id_match else (card.get("id") or None)
 
-        title_el = card.select_one("h6, h4, [data-cy='ad-card-title']")
-        title_text = title_el.get_text(strip=True) if title_el else ""
+        # OLX пишет данные карточки в 3 фиксированных <p> тега (с 2025-04).
+        # Старые селекторы h6/h4/[data-cy='ad-card-title'] больше не работают —
+        # это причина 85% missing brand_id и 6% empty titles в БД.
+        ps = card.find_all("p")
+        title_text = ps[0].get_text(strip=True) if len(ps) >= 1 else ""
+        loc_text = ps[1].get_text(strip=True) if len(ps) >= 2 else ""
+        year_mileage_text = ps[2].get_text(strip=True) if len(ps) >= 3 else ""
 
-        # Формат обычно "Марка Модель, год"
-        clean = re.sub(r",.*", "", title_text)
-        parts = clean.split()
-        brand = parts[0] if parts else None
-        model = parts[1] if len(parts) > 1 else None
-        year_match = re.search(r"\b(19|20)\d{2}\b", title_text)
+        # Brand/model через нормализацию: title-ы хаотичны (Cyrillic/Latin/typos/префиксы).
+        brand_slug, model_text = _extract_brand_and_model(title_text)
+        # brand_name выводим из slug (save_listing использует это для INSERT brands)
+        brand_name = brand_slug.replace("-", " ").title() if brand_slug else None
+
+        # Год — из p[2] (надёжнее чем из title с user-noise)
+        year_match = re.search(r"\b(19|20)\d{2}\b", year_mileage_text or title_text)
         year = int(year_match.group(0)) if year_match else None
 
-        price_el = card.select_one("[data-testid='ad-price'], .price")
+        # Пробег — только из p[2], OLX даёт в полных км ("354 000 км")
+        mileage_km = None
+        m = re.search(r"([\d\s]+)\s*км", year_mileage_text)
+        if m:
+            try:
+                mileage_km = int(re.sub(r"\s", "", m.group(1)))
+            except ValueError:
+                mileage_km = None
+
+        # Цена
+        price_el = card.select_one("[data-testid='ad-price'], [data-testid='priceBlock']")
         price_text = price_el.get_text(strip=True) if price_el else ""
         price_kzt = _parse_price(price_text)
 
-        location_el = card.select_one("[data-testid='location-date'], .price-label")
+        # Город — из p[1], формат "Город - дата" или "Город, район - дата"
         city = None
-        if location_el:
-            loc_text = location_el.get_text(strip=True)
-            city_match = re.match(r"([^,\d]+)", loc_text)
-            if city_match:
-                city = city_match.group(1).strip()
-
-        # Пробег: бейдж с числом + "км" или "тыс. км"
-        mileage_km = None
-        for badge in card.select("[data-testid='ad-card-param'], .css-1xsifub"):
-            badge_text = badge.get_text(strip=True)
-            km_match = re.search(r"([\d\s]+)\s*(?:тыс\.\s*)?км", badge_text, re.IGNORECASE)
-            if km_match:
-                km_raw = int(re.sub(r"\s", "", km_match.group(1)))
-                # Определяем тысячи км или обычные км
-                mileage_km = km_raw * 1000 if "тыс" in badge_text.lower() or km_raw < 1000 else km_raw
-                break
+        if loc_text:
+            cm = re.match(r"^(.+?)\s*-\s*", loc_text)
+            if cm:
+                city = cm.group(1).strip()
+                # Отсекаем район после запятой ("Алматы, Турксибский р-н" → "Алматы")
+                city = city.split(",")[0].strip()
 
         return {
             "source": "olx",
             "external_id": external_id,
-            "brand_slug": _slug(brand),
-            "model_slug": _slug(model),
-            "brand_name": brand,
-            "model_name": model,
-            "title": title_text,
+            "brand_slug": brand_slug,
+            "model_slug": _slug(model_text),
+            "brand_name": brand_name,
+            "model_name": model_text,
+            "title": title_text or None,
             "year": year,
             "price_kzt": price_kzt,
             "city": city,
