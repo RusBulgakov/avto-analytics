@@ -272,11 +272,14 @@ def _validate_model(model: Optional[str], brand: Optional[str]) -> Optional[str]
     НЕ отсекаем чистые цифры в общем случае — много легитимных моделей
     обозначается числом: Audi 80/100, BMW 525/528/530/535, Mercedes 190,
     Mazda 626/323, Porsche 911, Lada 2107/2114/2110, и т.п. (~20k объявл).
+
+    1-символьные модели сохраняются: Mazda 6/3/2, BMW 3/5/7 — реальные.
+    Раньше отсекали → 68 Mazda 6 listings потеряли model_id.
     """
     if not model or not isinstance(model, str):
         return None
     cleaned = model.strip()
-    if len(cleaned) < 2:
+    if not cleaned:  # пусто после strip
         return None
     # 4-значный год → не модель (Lada 2107 — 4 цифры, но НЕ в диапазоне годов)
     if re.fullmatch(r"\d{4}", cleaned):
