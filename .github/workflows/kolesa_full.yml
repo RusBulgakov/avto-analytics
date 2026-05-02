@@ -2,7 +2,7 @@ name: Kolesa Full Parse (sharded)
 
 # Отдельный workflow для kolesa.kz — самого тяжёлого источника.
 # 297 фидов в одном job не влезает (GHA лимит 360 мин на job).
-# Решение: шардирование на параллельные job'ы × ~149 фидов на шард.
+# Решение: шардирование на параллельные job'ы × ~99 фидов на шард.
 #
 # Constraint: kolesa.kz **накопительно** банит IP из Azure-датацентра GHA.
 # Не пер-запросный лимит, а средний rate за окно времени. Эмпирика:
@@ -12,16 +12,19 @@ name: Kolesa Full Parse (sharded)
 #   Эксп. 2 (04-26):    3 шарда × 2 concurrency = 6 simul, delay 3-6
 #                        → банило на 4-м часу (timeout на каждом запросе)
 #   Эксп. 3 (04-27):    2 шарда × 2 concurrency = 4 simul, delay 5-10
-#                        → rate в 2.5x ниже (~32 req/min vs ~80), стабильно
+#                        → rate 32 req/min, стабильно НО 8.8ч на 297 фидов
+#                        → не влез в 350-мин timeout, 4 cancel'а подряд
+#   Эксп. 4 (05-02):    3 шарда × 2 concurrency = 6 simul, delay 4-7
+#                        → 297/3/2 = 50 batches × 50 pages × 5.5с = 4.5ч
+#                        → aggregate rate 66 req/min — между 32 (safe) и 80 (banned)
+#                        → но успеваем закончить раньше до накопления лимита
 #
 # Формула rate = simultaneous / avg_delay:
 #   6 / 4.5 = 1.33 req/s = 80 req/min  ← банило
-#   4 / 7.5 = 0.53 req/s = 32 req/min  ← текущий, безопасно
+#   6 / 5.5 = 1.10 req/s = 66 req/min  ← текущий, должно проходить (короче окно)
+#   4 / 7.5 = 0.53 req/s = 32 req/min  ← безопасно но не влезает в timeout
 #
-# Цена: каждый шард медленнее (~5–6ч вместо 3.5ч), но влезаем в timeout
-# и не словим бан. Trade speed-for-stability.
-#
-# После УСПЕШНОГО завершения ВСЕХ 2 шардов → запускается deactivate-old
+# После УСПЕШНОГО завершения ВСЕХ 3 шардов → запускается deactivate-old
 # (scoped to source=kolesa, чтобы не задеть mycar/olx).
 # Если хоть один шард упал/прерван → deactivate НЕ запускается,
 # чтобы не помечать inactive то, что не успели обновить.
@@ -36,9 +39,9 @@ on:
   workflow_dispatch:
     inputs:
       shard_count:
-        description: 'Количество шардов (по умолчанию 2)'
+        description: 'Количество шардов (по умолчанию 3)'
         required: false
-        default: '2'
+        default: '3'
 
 # Не запускать параллельно — если предыдущий прогон ещё идёт, новый встанет в очередь.
 # cancel-in-progress: false — не убиваем начатый прогон,
@@ -49,7 +52,7 @@ concurrency:
 
 env:
   PYTHONPATH: ${{ github.workspace }}
-  SHARD_COUNT: ${{ github.event.inputs.shard_count || '2' }}
+  SHARD_COUNT: ${{ github.event.inputs.shard_count || '3' }}
 
 jobs:
 
@@ -57,17 +60,16 @@ jobs:
   # Шаг 1: Параллельный запуск шардов kolesa
   # ─────────────────────────────────────────
   kolesa-shard:
-    name: 🕷️ Kolesa shard ${{ matrix.shard_index }}/2
+    name: 🕷️ Kolesa shard ${{ matrix.shard_index }}/3
     runs-on: ubuntu-latest
-    # 350 мин = max GHA hardcap для job. С delay 5-10 на шард (~149 фидов)
-    # ожидаемое время ~5–6ч — вплотную к лимиту, поэтому MIN_SAVED_THRESHOLD
-    # подстрахует от cancellation-без-данных.
+    # 350 мин = max GHA hardcap для job. С 3 шардами × ~99 фидов × delay 4-7
+    # ожидаемое время ~4.5ч — запас 1.3ч до timeout.
     timeout-minutes: 350
     strategy:
       fail-fast: false   # если один шард упал — остальные продолжают работать
       matrix:
         # Если меняешь SHARD_COUNT — синхронизируй этот список!
-        shard_index: [0, 1]
+        shard_index: [0, 1, 2]
 
     steps:
       - uses: actions/checkout@v4
@@ -88,21 +90,19 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           KOLESA_SHARD_INDEX: ${{ matrix.shard_index }}
-          KOLESA_SHARD_COUNT: 2
-          # 2 шарда × concurrency 2 = 4 simultaneous (вместо прежних 6).
-          # Бан 04-26 показал, что 6 simul + delay 3-6 даёт ~80 req/min —
-          # выше порога kolesa anti-bot. Снижаем rate в 2.5x.
+          KOLESA_SHARD_COUNT: 3
+          # 3 шарда × concurrency 2 = 6 simultaneous.
+          # Aggregate rate = 6/5.5 = 1.1 req/s = 66 req/min — между 32 (safe)
+          # и 80 (banned). Успеваем закончить за 4.5ч до накопления лимита.
           KOLESA_CITY_CONCURRENCY: 2
-          # Smoke-check: парсер exit 1 если сохранит < этого порога
-          # (значит IP заблокирован и запускать deactivate нельзя).
-          # 1 шард = ~149 фидов, при стабильной работе должно быть 8k+
-          # сохранений на шард. 1000 — очень консервативный минимум.
+          # Smoke-check: парсер exit 1 если сохранит < этого порога.
+          # 1 шард = ~99 фидов, при стабильной работе должно быть 7k+ сохранений.
           MIN_SAVED_THRESHOLD: 1000
-          # Delay 5-10 (avg 7.5) — повышен с 3-6 (avg 4.5) для снижения
-          # rate. С 4 simultaneous даёт 4/7.5 = 0.53 req/s = 32 req/min
-          # (было 80 при 6/4.5 — банило).
-          PARSER_REQUEST_DELAY_MIN: 5
-          PARSER_REQUEST_DELAY_MAX: 10
+          # Delay 4-7 (avg 5.5). Per-shard rate = 2/5.5 = 22 req/min,
+          # aggregate 3 × 22 = 66 req/min. С учётом коротких 4.5ч окна
+          # — должно проходить anti-bot (банило при долгих 80 req/min).
+          PARSER_REQUEST_DELAY_MIN: 4
+          PARSER_REQUEST_DELAY_MAX: 7
           PARSER_MAX_RETRIES: 3
 
   # ─────────────────────────────────────────
