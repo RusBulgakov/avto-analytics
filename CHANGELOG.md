@@ -4,6 +4,49 @@
 
 ---
 
+## 2026-05-02 — OLX parser fix + Kolesa 3-шарда (85986e7, 1a186c4)
+
+### Fixed
+- **OLX parser устаревшие селекторы** (`parsers/olx/parser.py::_parse_card`). В БД 1953 активных OLX listings:
+  - 85% без `brand_id`, 87% без `model_id`, 90% без `year`, 6% без `title`
+  - Сохранённый title-пример: `'Nissan Maxima almaty1 000 000 тг.'` — склейка `card.get_text(strip=True)` без разделителей
+  - Корневая причина: OLX выпилил `<h6>/<h4>` теги и `data-cy='ad-card-title'`. Селектор возвращал `None` на ВСЕХ карточках.
+  - Новая структура карточки (стабильна 13/13): корневой `[data-cy='l-card']` содержит ровно 3 `<p>` тега — `p[0]=TITLE`, `p[1]="Город - дата"`, `p[2]="Год - X км"`.
+  - `external_id`: regex `IDxxx` по URL + fallback на `card['id']` (numeric OLX ID).
+
+### Added
+- **OLX brand normalizer** в `parsers/olx/parser.py`:
+  - `BRAND_LOOKUP`: 80+ алиасов — English canonical, Cyrillic transliterations (Мерседес, Кия, Хёндай, Лада, Ауди, Шкода...), common typos (Mersedes/Mersedes benz), 2-word brands (Land Rover, Mercedes Benz, Great Wall)
+  - `JUNK_PREFIXES`: стрипает "Продам", "Срочно", "Обмен", "Куплю", "Торг" перед матчингом
+  - `_extract_brand_and_model(title)` сканирует первые 3 позиции title × (2-word, 1-word) → возвращает canonical slug или `None` (не создаём мусорные бренды в БД)
+  - Модель — слова после бренда до года выпуска, junk-слова обрезаны
+
+### Tests (на реальной странице `/tmp/olx_sample.html`)
+- 17/17 unit-кейсов `_extract_brand_and_model` (Cyrillic, typos, mixed-case, multi-word, prefix-junk)
+- На 13 реальных карточках:
+  | Поле | До | После |
+  |---|---:|---:|
+  | brand | ~15% | **76%** |
+  | title | 94% | **100%** |
+  | year | ~10% | **100%** |
+  | city | — | **100%** |
+  | mileage | — | **69%** |
+  | price | ? | **100%** |
+- 3 NULL brand — объективно проблемные titles ("W124", "Гольф 3", "1989 ВАЗ" без бренда на первой позиции).
+
+### Changed
+- **Kolesa workflow: 2 шарда → 3 шарда** (`.github/workflows/kolesa_full.yml`, commit 1a186c4).
+  - Триггер: после добавления `CITY_BRAND_FEEDS` + `CITY_BRAND_MODEL_FEEDS` (Phase 2 coverage) число фидов выросло 192 → 297. Расчётное время на шард 8.8ч — не помещалось в 5.8ч hardcap GHA. **4 запуска подряд** (2026-04-30…2026-05-02) cancel'ились ровно на 5h50m, deactivate ни разу не запустился.
+  - Фикс: `shard_count=3`, `delay 5-10 → 4-7` (avg 5.5).
+  - Новое расчётное время: 297 / 3 / 2 = 50 batches × 50 pages × 5.5с = **~4.5ч/шард** — запас 1.3ч до timeout.
+  - Aggregate rate: 6 simul / 5.5 avg = 66 req/min — между 32 (safe) и 80 (banned). Успеваем закончить за 4.5ч до накопления anti-bot лимита.
+
+### Impact
+- OLX фактически перестал давать осмысленную аналитику (1953 активных листинга → почти все без brand/model). После фикса ожидаем **76%+ brand_id fill** на новых записях.
+- Kolesa прогон теперь стабильно завершается → `deactivate-old` запускается → данные перестают **накопительно протухать** (последние 4 cancel'а оставляли listings со stale `last_seen_at`).
+
+---
+
 ## 2026-04-27 — Kolesa: anti-bot rate-limit fix (2×2=4 simul, delay 5-10) (6afac4a)
 
 ### Fixed
