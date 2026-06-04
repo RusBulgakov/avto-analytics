@@ -4,7 +4,7 @@
 
 ---
 
-## 2026-06-04 — README синхронизирован с кодом: 3 шарда, 297 фидов, forecast (docs-only, SHA при коммите)
+## 2026-06-04 — README синхронизирован с кодом: 3 шарда, 297 фидов, forecast (docs-only, 4010579)
 
 ### Fixed
 - **README рассинхронизирован с фактическим кодом** — нарушение правила CLAUDE.md «README = single source of truth». Приведено в соответствие с `.github/workflows/kolesa_full.yml` и `parsers/kolesa/parser.py` (правок кода/воркфлоу НЕТ, только документация):
