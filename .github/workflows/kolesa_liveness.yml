@@ -1,0 +1,52 @@
+name: Kolesa Liveness Sweep
+
+# Курсор-резюмируемый проход по активным kolesa-объявлениям: пингует URL,
+# ставит closed_at на 404 (продано), освежает last_seen_at на 200.
+# Каждый прогон time-boxed (300 мин), несколько прогонов/сутки перекрывают
+# весь активный набор. Резюмируемость — через last_checked_at в БД.
+
+on:
+  schedule:
+    - cron: '15 1,7,13,19 * * *'   # 4×/сутки, со сдвигом от kolesa_full/daily/alive
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry-run (не писать в БД)'
+        required: false
+        default: '0'
+      time_budget_min:
+        description: 'Бюджет времени на прогон, мин'
+        required: false
+        default: '300'
+
+concurrency:
+  group: kolesa-liveness
+  cancel-in-progress: false   # не убиваем — ждём в очереди
+
+env:
+  PYTHONPATH: ${{ github.workspace }}
+
+jobs:
+  liveness:
+    name: Liveness sweep (kolesa)
+    runs-on: ubuntu-latest
+    timeout-minutes: 330       # < 6ч hard-cap; воркер сам выходит на 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: parsers/requirements.txt
+      - name: Install dependencies
+        run: pip install -r parsers/requirements.txt
+      - name: Run liveness sweep
+        run: python -m parsers.kolesa.liveness
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          LIVENESS_DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
+          LIVENESS_TIME_BUDGET_MIN: ${{ github.event.inputs.time_budget_min || '300' }}
+          LIVENESS_BATCH: '500'
+          LIVENESS_CONCURRENCY: '2'
+          LIVENESS_DELAY_MIN: '1.2'
+          LIVENESS_DELAY_MAX: '2.5'

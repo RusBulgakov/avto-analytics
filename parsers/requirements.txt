@@ -5,3 +5,4 @@ lxml==5.1.0
 tenacity==8.2.3
 python-dotenv==1.0.1
 curl_cffi==0.7.3
+pytest>=8.0
