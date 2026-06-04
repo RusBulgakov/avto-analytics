@@ -82,20 +82,20 @@ async def _check_one(session, url: str, external_id: str) -> str:
         return classify_listing(-1, None, external_id)  # → TRANSIENT
 
 
-async def _worker(q: asyncio.Queue, session, pool, totals: dict) -> None:
+async def _worker(q: asyncio.Queue, session, pool, totals: dict, dry_run: bool) -> None:
     while True:
         try:
             row = q.get_nowait()
         except asyncio.QueueEmpty:
             return
         verdict = await _check_one(session, row["listing_url"], str(row["external_id"]))
+        totals[verdict] += 1
+        totals["checked"] += 1
         try:
-            await apply_verdict(pool, row["id"], verdict, DRY_RUN)
+            await apply_verdict(pool, row["id"], verdict, dry_run)
         except Exception as e:
             logger.warning("apply failed for %s: %s", row["id"], e)
             totals["errors"] += 1
-        totals[verdict] += 1
-        totals["checked"] += 1
         await asyncio.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
         q.task_done()
 
@@ -121,7 +121,7 @@ async def run_liveness(dry_run: bool = DRY_RUN) -> dict:
             q: asyncio.Queue = asyncio.Queue()
             for r in rows:
                 q.put_nowait(r)
-            await asyncio.gather(*[_worker(q, session, pool, totals)
+            await asyncio.gather(*[_worker(q, session, pool, totals, dry_run)
                                    for _ in range(CONCURRENCY)])
             logger.info("progress: checked=%d alive=%d closed=%d transient=%d",
                         totals["checked"], totals[ALIVE], totals[CLOSED], totals[TRANSIENT])
