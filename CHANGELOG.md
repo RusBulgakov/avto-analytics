@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-06-04 — README синхронизирован с кодом: 3 шарда, 297 фидов, forecast (docs-only, SHA при коммите)
+
+### Fixed
+- **README рассинхронизирован с фактическим кодом** — нарушение правила CLAUDE.md «README = single source of truth». Приведено в соответствие с `.github/workflows/kolesa_full.yml` и `parsers/kolesa/parser.py` (правок кода/воркфлоу НЕТ, только документация):
+  - **Шарды 2 → 3** во всех местах: ASCII-диаграмма §Архитектура (`[shard 0, shard 1]` → `[shard 0, 1, 2]`), таблица §Источники данных, §Планировщик, §Структура проекта, §GitHub Actions Workflows (`kolesa-shard ×2` → `×3`, `matrix [shard_index: 0, 1]` → `[0, 1, 2]`). Фактический workflow: `shard_count=3`, `matrix.shard_index: [0,1,2]`, `KOLESA_SHARD_COUNT=3`, `KOLESA_CITY_CONCURRENCY=2`, `PARSER_REQUEST_DELAY 4–7`.
+  - **Число фидов 193 → 297** — актуальное `len(ALL_FEEDS)` после dedup: 15 городов + 81 бренд + 97 моделей + 75 город×бренд + 30 город×бренд×модель. README отражал состояние до Phase-2 (без `CITY_BRAND_FEEDS` / `CITY_BRAND_MODEL_FEEDS`).
+  - **Время на шард**: ~99 фидов ≈ 4.5ч (было «~4-5ч» для ~96 фидов).
+  - **`батчи по 3` → `по 2`** — прод переопределяет код-дефолт `CITY_CONCURRENCY=3` через `KOLESA_CITY_CONCURRENCY=2`.
+  - **Telegram прогресс-бар**: `kolesa[1/2]`/`[2/2]` → `[1/3]`/`[2/3]`/`[3/3]`.
+  - **§Известные особенности (anti-bot)**: рекомендуемая конфигурация переписана с «2 шарда × 3 concurrent» на фактическую «3 шарда × 2 concurrent + delay 4–7с (~66 req/min)».
+  - **`frontend/pages/forecast.tsx` «PRO placeholder» → «Прогноз цен: OLS-регрессия V3 (KZT + USD)»** — страница давно реализована (664 строки, Forecast V3), описание в §Структура устарело.
+
+### Impact
+- README снова соответствует коду: число шардов и фидов в документации == значениям в `kolesa_full.yml` и `parser.py`. Backlog-задача ClaudeMetrics `t-0001` закрыта.
+
+---
+
 ## 2026-05-02 — OLX parser fix + Kolesa 3-шарда (85986e7, 1a186c4)
 
 ### Fixed
