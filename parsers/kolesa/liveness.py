@@ -125,6 +125,9 @@ async def run_liveness(dry_run: bool = DRY_RUN) -> dict:
                                    for _ in range(CONCURRENCY)])
             logger.info("progress: checked=%d alive=%d closed=%d transient=%d",
                         totals["checked"], totals[ALIVE], totals[CLOSED], totals[TRANSIENT])
+            if dry_run:
+                logger.info("dry-run: single sample batch processed, stopping")
+                break
     return totals
 
 
