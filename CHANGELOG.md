@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-06-04 — Kolesa liveness sweep: детектор «продано» + полный охват (Phase 1)
+
+### Added
+- **`parsers/kolesa/liveness.py`** + **`parsers/kolesa/liveness_classify.py`** — курсор-резюмируемый liveness-проход по активным kolesa-объявлениям (порядок `last_checked_at NULLS FIRST`). GET `listing_url`: `200`+маркеры листа → `last_seen_at=now()`; `404/410`/soft-404 → `is_active=FALSE, closed_at=now()` (момент продажи); `5xx/429/сеть` → не трогаем (перечек в след. цикле). Чистый классификатор покрыт pytest (8 кейсов).
+- **`listings.last_checked_at`** + частичный индекс `idx_listings_liveness` (миграция `database/migrations/001_liveness_last_checked_at.sql`).
+- **`.github/workflows/kolesa_liveness.yml`** — 4×/сутки (`15 1,7,13,19 UTC`), time-boxed 300 мин, резюмируемо через `last_checked_at`, ~2 req/s.
+- **pytest** добавлен в `parsers/requirements.txt` (первые юнит-тесты в проекте).
+
+### Fixed
+- Сигнал «продано» был мёртв >30 дней: `kolesa_full` всегда отменялся по 350-мин таймауту (25 прогонов подряд), `deactivate`/`alive_check` под `if: success()` не запускались. Liveness ставит `closed_at` напрямую при `404`, не завися от завершения deep-parse.
+
+### Deploy (ручные шаги — см. `docs/superpowers/plans/2026-06-04-kolesa-liveness-sweep.md`)
+- Применить миграцию `001` в Neon SQL Editor; прогнать bootstrap (workflow_dispatch) для вычистки накопленного бэклога ~157k «активных» (83% протухли, ~15%+ — проданы-но-висят).
+- После bootstrap «активных» закономерно снизится (закрыты фантомы) — это починка аналитики, не регресс.
+
+### Impact
+- Полный охват активного набора курсором (без слепых зон 5000-лимита); детект продажи в пределах ~1 суток.
+
+---
+
 ## 2026-06-04 — README синхронизирован с кодом: 3 шарда, 297 фидов, forecast (docs-only, 4010579)
 
 ### Fixed

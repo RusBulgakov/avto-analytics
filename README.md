@@ -291,6 +291,16 @@ timeout: 120 мин
 
 **Public repo:** GitHub Actions бесплатен и unlimited для публичных репозиториев, поэтому частый cron не тратит квоту.
 
+### `kolesa_liveness.yml` — детектор «продано» (liveness sweep)
+
+Курсор-резюмируемый проход по ВСЕМ активным kolesa-объявлениям (порядок —
+`last_checked_at NULLS FIRST`, дольше всех не проверенные первыми). GET `listing_url`:
+`200`+маркеры листа (`№{id}`/canonical) → `last_seen_at=now()`; `404/410`/soft-404 →
+`is_active=FALSE, closed_at=now()` (момент продажи); `5xx/429/сеть` → не трогаем.
+Time-boxed 300 мин, 4×/сутки (`15 1,7,13,19 UTC`), ~2 req/s. Резюмируемость — через
+`listings.last_checked_at`. Поглощает роль `alive_check` (тот лишь реанимировал inactive,
+но не ставил `closed_at`). См. `parsers/kolesa/liveness.py`.
+
 ---
 
 ## 🗄️ Схема БД
@@ -303,7 +313,7 @@ listings      (id UUID, source_id, brand_id, model_id, external_id,
                title, year, mileage_km, engine_volume_cc, engine_power_hp,
                body_type_id, fuel_type_id, transmission_id, drive_type_id,
                color, city, region, condition, listing_url,
-               is_active, first_seen_at, last_seen_at, closed_at)
+               is_active, first_seen_at, last_seen_at, closed_at, last_checked_at)
 price_history (id, listing_id, price_kzt, price_usd, recorded_at)
 body_types / fuel_types / transmission_types / drive_types  — справочники
 users / subscription_plans / user_subscriptions             — пользователи
