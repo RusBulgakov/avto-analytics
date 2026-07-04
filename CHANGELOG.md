@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-07-05 — Тёмная/светлая тема: переключатель + фикс шрифтовых токенов (t-0010)
+
+### Added
+- **Переключатель темы** в Topbar (кнопка ☾/☀ рядом с шестерёнкой) и в мобильном overlay-меню (`.mobile-theme-btn`, т.к. `.topbar-btn` на <640px скрыт). Сегмент «Тема» в панели Tweaks продолжает работать — состояние общее.
+- **`frontend/pages/_document.tsx`** (новый): инлайн-скрипт в `<head>` выставляет `data-theme` на `<html>` синхронно ДО первой отрисовки (в экспортированном HTML скрипт стоит раньше `<link rel="stylesheet">`) — «вспышки» темы (FOUC) нет. Приоритет: `localStorage['theme']` → `prefers-color-scheme` → dark; try/catch на случай отключённого localStorage. Заодно `<Html lang="ru">`.
+- **`frontend/hooks/useTheme.ts`** переписан на zustand-store (`useThemeStore`): раньше каждый вызов `useTheme()` держал собственный `useState`, и два потребителя (Topbar + Tweaks) рассинхронизировались бы. Начальное значение store читает из `data-theme` (его уже выставил скрипт `_document`); хук-обёртка `useTheme()` до mount отдаёт `'dark'` — совпадает с build-time HTML, hydration mismatch исключён.
+
+### Fixed
+- **Весь сайт рендерился системным serif (Times) вместо Inter/Space Grotesk/JetBrains Mono.** Причина: токены `--body/--display/--mono` объявлены на `:root` и резолвят `var(--font-*)` тоже на `:root`, а классы next/font с `--font-*` висели на wrapper-`<div>` внутри `body` — на `:root` переменные были не определены, вся цепочка становилась invalid at computed-value time. Фикс: `_app.tsx` инлайнит `<style>:root{--font-body:…;--font-display:…;--font-mono:…}</style>` через `next/head` (значения из `font.style.fontFamily`) — попадает в статический HTML, шрифты корректны с первого кадра.
+
+### Changed
+- **`PriceChart.tsx`**: все хардкод-цвета (`#7b8899`, `#6ea8ff`, `#22e0a1`, белая сетка `rgba(255,255,255,0.04)`) заменены на токены (`var(--text-muted)`, `var(--info)`, `var(--up)`, `var(--grid-line)`), градиенты — через `style={{stopColor}}`. График читается в обеих темах.
+- **`KZMapInner.tsx`**: тайлы CartoCDN переключаются `dark_*` ↔ `light_*` по теме (`key` пересоздаёт слой), фон контейнера `var(--bg-2)` вместо `#0a0c10`, цвет маркеров — `--up` соответствующей темы (Leaflet рисует SVG со своими inline-стилями, поэтому константы по теме, а не `var()`).
+- `globals.css`: светлый вариант фона мобильного overlay-меню (`[data-theme='light'] .mobile-nav-overlay`).
+- Остальные чарты (Heatmap — `color-mix` от токенов + готовый light-override текста ячеек, PriceCandles/BoxPlot — уже на `var(--*)`/нейтральной палитре, Funnel — midtone-цвета) проверены статически: читаемы в обеих темах, правки не требовались.
+
+### Impact
+- Тема переключается мгновенно, сохраняется между сессиями (`localStorage['theme']`), по умолчанию следует системной. `output: 'export'` не затронут — вся логика клиентская, скрипт статический. Типографика сайта впервые реально использует загружаемые next/font шрифты.
+
+---
+
 ## 2026-07-05 — Sentry: трекинг ошибок backend + frontend (t-0006)
 
 ### Added

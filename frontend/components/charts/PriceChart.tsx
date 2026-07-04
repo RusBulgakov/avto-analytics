@@ -53,7 +53,7 @@ export default function PriceChart({ data, loading, granularity = 'day' }: Price
                 background: 'var(--surface-2)', border: '1px solid var(--border-strong)',
                 borderRadius: 6, padding: '10px 14px', fontSize: 12.5, fontFamily: 'var(--mono)',
             }}>
-                <div style={{ color: '#7b8899', marginBottom: 8 }}>
+                <div style={{ color: 'var(--text-muted)', marginBottom: 8 }}>
                     {tooltipDateFormat(label, granularity)}
                 </div>
                 {payload.map((p: any) => (
@@ -70,7 +70,7 @@ export default function PriceChart({ data, loading, granularity = 'day' }: Price
     }
     if (!data?.length) {
         return (
-            <div style={{ height: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#7b8899' }}>
+            <div style={{ height: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>
                 Нет данных для выбранных фильтров
             </div>
         );
@@ -80,38 +80,38 @@ export default function PriceChart({ data, loading, granularity = 'day' }: Price
             <AreaChart data={data} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
                 <defs>
                     <linearGradient id="avgGrad" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#6ea8ff" stopOpacity={0.3} />
-                        <stop offset="95%" stopColor="#6ea8ff" stopOpacity={0} />
+                        <stop offset="5%" style={{ stopColor: 'var(--info)' }} stopOpacity={0.3} />
+                        <stop offset="95%" style={{ stopColor: 'var(--info)' }} stopOpacity={0} />
                     </linearGradient>
                     <linearGradient id="medGrad" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#22e0a1" stopOpacity={0.25} />
-                        <stop offset="95%" stopColor="#22e0a1" stopOpacity={0} />
+                        <stop offset="5%" style={{ stopColor: 'var(--up)' }} stopOpacity={0.25} />
+                        <stop offset="95%" style={{ stopColor: 'var(--up)' }} stopOpacity={0} />
                     </linearGradient>
                 </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--grid-line)" />
                 <XAxis
                     dataKey="date"
                     tickFormatter={(d) => tickDateFormat(d, granularity)}
-                    tick={{ fill: '#7b8899', fontSize: 11 }}
+                    tick={{ fill: 'var(--text-muted)', fontSize: 11 }}
                     axisLine={false} tickLine={false}
                 />
                 <YAxis
                     tickFormatter={formatPrice}
-                    tick={{ fill: '#7b8899', fontSize: 11 }}
+                    tick={{ fill: 'var(--text-muted)', fontSize: 11 }}
                     axisLine={false} tickLine={false} width={80}
                 />
                 <Tooltip content={<CustomTooltip />} />
                 <Legend
-                    wrapperStyle={{ paddingTop: 16, fontSize: 13, color: '#7b8899' }}
+                    wrapperStyle={{ paddingTop: 16, fontSize: 13, color: 'var(--text-muted)' }}
                 />
                 <Area
                     type="monotone" dataKey="avg_price_kzt"
-                    name="Средняя цена" stroke="#6ea8ff" strokeWidth={2}
+                    name="Средняя цена" stroke="var(--info)" strokeWidth={2}
                     fill="url(#avgGrad)" dot={false} activeDot={{ r: 5 }}
                 />
                 <Area
                     type="monotone" dataKey="median_price_kzt"
-                    name="Медиана" stroke="#22e0a1" strokeWidth={2}
+                    name="Медиана" stroke="var(--up)" strokeWidth={2}
                     fill="url(#medGrad)" dot={false} activeDot={{ r: 5 }}
                 />
             </AreaChart>

@@ -6,6 +6,7 @@ import useSWR from 'swr';
 import { analyticsApi } from '@/lib/api';
 import { fmt } from '@/lib/format';
 import { useUsdKzt } from '@/hooks/useUsdKzt';
+import { useTheme } from '@/hooks/useTheme';
 import Tweaks from './Tweaks';
 
 interface SummaryResponse {
@@ -26,6 +27,8 @@ export default function Topbar() {
     const router = useRouter();
     const [tweaksOpen, setTweaksOpen] = useState(false);
     const [mobileNavOpen, setMobileNavOpen] = useState(false);
+    const [theme, setTheme] = useTheme();
+    const toggleTheme = () => setTheme(theme === 'dark' ? 'light' : 'dark');
 
     // Закрываем mobile-меню при смене страницы
     useEffect(() => {
@@ -142,6 +145,19 @@ export default function Topbar() {
                     <span className="kbd">⌘K</span>
                 </button>
 
+                {/* Тема: ☾ в тёмной (клик → светлая), ☀ в светлой (клик → тёмная).
+                    useTheme до mount отдаёт 'dark' — иконка совпадает с SSG-HTML,
+                    hydration mismatch нет. */}
+                <button
+                    className="topbar-btn"
+                    type="button"
+                    onClick={toggleTheme}
+                    aria-label={theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему'}
+                    title="Переключить тему"
+                >
+                    <span aria-hidden>{theme === 'dark' ? '☾' : '☀'}</span>
+                </button>
+
                 <button
                     className="topbar-btn"
                     type="button"
@@ -184,6 +200,17 @@ export default function Topbar() {
                             </Link>
                         ))}
                     </nav>
+
+                    {/* Переключатель темы в мобильном меню — .topbar-btn на <640 скрыт */}
+                    <button
+                        className="mobile-theme-btn"
+                        type="button"
+                        onClick={toggleTheme}
+                        aria-label={theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему'}
+                    >
+                        <span aria-hidden>{theme === 'dark' ? '☾' : '☀'}</span>
+                        <span>Тема: {theme === 'dark' ? 'тёмная' : 'светлая'}</span>
+                    </button>
                 </div>
             )}
 

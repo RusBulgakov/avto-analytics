@@ -6,6 +6,7 @@ import { MapContainer, TileLayer, CircleMarker, Tooltip } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 
 import { fmt } from '@/lib/format';
+import { useThemeStore } from '@/hooks/useTheme';
 
 export interface GeoCity {
     slug: string;
@@ -60,13 +61,25 @@ const CITY_COORDS: Record<string, [number, number]> = {
     kapchagay:        [43.873, 77.068],
 };
 
-const UP = '#22e0a1';
-const UP_DIM = 'rgba(34, 224, 161, 0.45)';
+// Цвет маркеров = токен --up соответствующей темы. Leaflet рисует SVG со своими
+// inline-стилями, поэтому значения задаём константами по теме, а не var().
+const MARKER = {
+    dark:  { up: '#22e0a1', upDim: 'rgba(34, 224, 161, 0.45)' },
+    light: { up: '#0a8a5f', upDim: 'rgba(10, 138, 95, 0.60)' },
+} as const;
 const MIN_R = 5;
 const MAX_R = 22;
 
 export default function KZMapInner({ data }: Props) {
     const router = useRouter();
+    // Компонент клиентский (dynamic ssr:false) — store к моменту рендера уже
+    // инициализирован из data-theme, hydration-mismatch невозможен.
+    const theme = useThemeStore(s => s.theme);
+    const isDark = theme === 'dark';
+    const { up: UP, upDim: UP_DIM } = MARKER[theme];
+    // Тайлы CartoCDN: dark_* / light_*. Внешние растровые тайлы CSS-переменными
+    // не перекрасить — меняем URL; key форсирует пересоздание слоя при смене темы.
+    const tileVariant = isDark ? 'dark' : 'light';
 
     const cities = useMemo(
         () =>
@@ -107,15 +120,17 @@ export default function KZMapInner({ data }: Props) {
                     maxZoom={8}
                     scrollWheelZoom={false}
                     attributionControl={false}
-                    style={{ height: '100%', width: '100%', background: '#0a0c10' }}
+                    style={{ height: '100%', width: '100%', background: 'var(--bg-2)' }}
                 >
                     <TileLayer
-                        url="https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png"
+                        key={`base-${tileVariant}`}
+                        url={`https://{s}.basemaps.cartocdn.com/${tileVariant}_nolabels/{z}/{x}/{y}{r}.png`}
                         subdomains={['a', 'b', 'c', 'd']}
                         maxZoom={19}
                     />
                     <TileLayer
-                        url="https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png"
+                        key={`labels-${tileVariant}`}
+                        url={`https://{s}.basemaps.cartocdn.com/${tileVariant}_only_labels/{z}/{x}/{y}{r}.png`}
                         subdomains={['a', 'b', 'c', 'd']}
                         maxZoom={19}
                         opacity={0.7}

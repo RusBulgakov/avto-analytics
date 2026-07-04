@@ -1,7 +1,11 @@
 /* ═══════════════════════════════════════════════════════════
    Auto Analytics KZ — Trading Terminal theme
    Design tokens, layout chrome, primitives
-   (Fonts loaded via next/font in _app.tsx → --font-display, --font-body, --font-mono)
+   Fonts: next/font в _app.tsx; --font-display/--font-body/--font-mono
+   инлайнятся на :root через <style> в <Head> (_app.tsx) — токены ниже
+   резолвят var(--font-*) именно на :root, класс на wrapper-див не годится.
+   Тема: data-theme на <html> ставит инлайн-скрипт в _document.tsx
+   (localStorage 'theme' → prefers-color-scheme → dark), до первой отрисовки.
    ═══════════════════════════════════════════════════════════ */
 
 :root {
@@ -552,6 +556,32 @@ button { font-family: inherit; }
   background: var(--surface-hover);
   border-color: var(--info);
   color: var(--info);
+}
+[data-theme='light'] .mobile-nav-overlay {
+  background: rgba(246, 246, 243, 0.96);
+}
+
+/* Переключатель темы внутри mobile-меню (десктопная .topbar-btn на <640 скрыта) */
+.mobile-theme-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 14px 16px;
+  font-family: var(--display);
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-2);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+  text-align: left;
+}
+.mobile-theme-btn:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
 }
 
 /* Tables: горизонтальный скролл на узком — обычная таблица 8 колонок не
