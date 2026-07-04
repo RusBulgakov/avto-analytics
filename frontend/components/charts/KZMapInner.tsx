@@ -1,11 +1,11 @@
 // components/charts/KZMapInner.tsx — client-only Leaflet map of Kazakhstan.
 // Wrapped by KZMap.tsx via next/dynamic (Leaflet needs window).
-import React, { useMemo } from 'react';
-import { useRouter } from 'next/router';
+import React, { useEffect, useMemo, useState } from 'react';
 import { MapContainer, TileLayer, CircleMarker, Tooltip } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 
 import { fmt } from '@/lib/format';
+import { useFilters } from '@/store/filters';
 
 export interface GeoCity {
     slug: string;
@@ -65,8 +65,25 @@ const UP_DIM = 'rgba(34, 224, 161, 0.45)';
 const MIN_R = 5;
 const MAX_R = 22;
 
+// Следим за data-theme на <html>: useTheme-хук в Tweaks не шарит state между
+// экземплярами, поэтому карта наблюдает атрибут напрямую.
+function useDocumentTheme(): 'dark' | 'light' {
+    const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+    useEffect(() => {
+        const read = () =>
+            setTheme(document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark');
+        read();
+        const obs = new MutationObserver(read);
+        obs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+        return () => obs.disconnect();
+    }, []);
+    return theme;
+}
+
 export default function KZMapInner({ data }: Props) {
-    const router = useRouter();
+    const selectedCities = useFilters(s => s.city);
+    const setCity = useFilters(s => s.setCity);
+    const theme = useDocumentTheme();
 
     const cities = useMemo(
         () =>
@@ -82,11 +99,16 @@ export default function KZMapInner({ data }: Props) {
 
     const maxListings = Math.max(1, ...cities.map(c => c.listings));
     const totalListings = cities.reduce((s, c) => s + c.listings, 0);
-    // Always-visible labels for the biggest markets (top 3 by volume)
-    const labelThreshold = useMemo(() => {
-        if (cities.length < 4) return 0;
+    // Always-visible labels for the biggest markets (top 3 by volume).
+    // Направление подписи чередуем по рангу, чтобы соседние города
+    // (Алматы/Шымкент) не накладывали свои плашки друг на друга.
+    const labelDirections = useMemo(() => {
         const sorted = [...cities].sort((a, b) => b.listings - a.listings);
-        return sorted[2]?.listings ?? Infinity;
+        const dirs: Record<string, 'top' | 'bottom'> = {};
+        sorted.slice(0, 3).forEach((c, idx) => {
+            dirs[c.slug] = idx % 2 === 0 ? 'top' : 'bottom';
+        });
+        return dirs;
     }, [cities]);
 
     return (
@@ -107,15 +129,18 @@ export default function KZMapInner({ data }: Props) {
                     maxZoom={8}
                     scrollWheelZoom={false}
                     attributionControl={false}
-                    style={{ height: '100%', width: '100%', background: '#0a0c10' }}
+                    style={{ height: '100%', width: '100%', background: theme === 'light' ? '#e8eaed' : '#0a0c10' }}
                 >
+                    {/* key: react-leaflet не пересоздаёт TileLayer при смене url — форсим */}
                     <TileLayer
-                        url="https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png"
+                        key={`base-${theme}`}
+                        url={`https://{s}.basemaps.cartocdn.com/${theme === 'light' ? 'light_nolabels' : 'dark_nolabels'}/{z}/{x}/{y}{r}.png`}
                         subdomains={['a', 'b', 'c', 'd']}
                         maxZoom={19}
                     />
                     <TileLayer
-                        url="https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png"
+                        key={`labels-${theme}`}
+                        url={`https://{s}.basemaps.cartocdn.com/${theme === 'light' ? 'light_only_labels' : 'dark_only_labels'}/{z}/{x}/{y}{r}.png`}
                         subdomains={['a', 'b', 'c', 'd']}
                         maxZoom={19}
                         opacity={0.7}
@@ -123,28 +148,31 @@ export default function KZMapInner({ data }: Props) {
                     {cities.map(c => {
                         const ratio = c.listings / maxListings;
                         const r = MIN_R + ratio * (MAX_R - MIN_R);
-                        const permanent = c.listings >= labelThreshold;
+                        const labelDir = labelDirections[c.slug];
+                        const isSelected = selectedCities.includes(c.slug);
                         return (
                             <CircleMarker
                                 key={c.slug}
                                 center={[c.lat, c.lng]}
                                 radius={r}
                                 pathOptions={{
-                                    color: UP,
-                                    fillColor: UP,
-                                    fillOpacity: 0.55,
+                                    color: isSelected ? '#f5c518' : UP,
+                                    fillColor: isSelected ? '#f5c518' : UP,
+                                    fillOpacity: isSelected ? 0.75 : 0.55,
                                     weight: 1.5,
                                     opacity: 0.9,
                                 }}
                                 eventHandlers={{
-                                    click: () => router.push(`/?city=${encodeURIComponent(c.slug)}`),
+                                    // Ставим/снимаем фильтр «Город» через store — sync-хук
+                                    // сам дополнит URL, не затирая остальные фильтры.
+                                    click: () => setCity(isSelected ? [] : [c.slug]),
                                 }}
                             >
                                 <Tooltip
-                                    direction="top"
-                                    offset={[0, -4]}
+                                    direction={labelDir ?? 'top'}
+                                    offset={[0, labelDir === 'bottom' ? 6 : -4]}
                                     opacity={1}
-                                    permanent={permanent}
+                                    permanent={labelDir != null}
                                     className="kz-map-tip"
                                 >
                                     <strong>{c.name}</strong>{' '}
@@ -171,7 +199,7 @@ export default function KZMapInner({ data }: Props) {
             >
                 <span>● РАЗМЕР = ОБЪЁМ РЫНКА · КЛИК = ФИЛЬТР</span>
                 <span>
-                    {cities.length} городов · {fmt.int(totalListings)} объявл.
+                    {cities.length} {fmt.plural(cities.length, ['город', 'города', 'городов'])} · {fmt.int(totalListings)} объявл.
                 </span>
             </div>
         </div>

@@ -3,6 +3,7 @@
 // Данные: { brand, q1, median, q3, whisker_low, whisker_high, count }
 
 import { useMemo } from 'react';
+import { fmt as sharedFmt } from '@/lib/format';
 
 export interface BoxPlotItem {
     brand: string;
@@ -136,7 +137,7 @@ export default function BoxPlot({ data, loading }: Props) {
                                 fontWeight={600}
                                 fill="var(--color-text, #e6eaf1)"
                             >
-                                {d.brand}
+                                {sharedFmt.brandName(d.brand)}
                             </text>
 
                             {/* Whisker line */}
@@ -176,14 +177,23 @@ export default function BoxPlot({ data, loading }: Props) {
                                 {fmt(d.median)}
                             </text>
 
-                            {/* Count badge */}
-                            <text
-                                x={x_wh + 6} y={cy + 4}
-                                fontSize={10}
-                                fill="var(--color-text-muted, #7b8899)"
-                            >
-                                {d.count.toLocaleString('ru-RU')}
-                            </text>
+                            {/* Count badge. У правого края переносим подпись влево от уса,
+                                иначе она обрезается краем viewBox («15 78.») */}
+                            {(() => {
+                                const countLabel = d.count.toLocaleString('ru-RU');
+                                const estWidth = countLabel.length * 6.5;
+                                const flip = x_wh + 6 + estWidth > 800 - 4;
+                                return (
+                                    <text
+                                        x={flip ? x_wh - 6 : x_wh + 6} y={cy + 4}
+                                        fontSize={10}
+                                        textAnchor={flip ? 'end' : 'start'}
+                                        fill="var(--color-text-muted, #7b8899)"
+                                    >
+                                        {countLabel}
+                                    </text>
+                                );
+                            })()}
                         </g>
                     );
                 })}

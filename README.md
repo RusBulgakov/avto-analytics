@@ -329,9 +329,9 @@ users / subscription_plans / user_subscriptions             — пользова
 
 | Метод | Путь | Описание |
 |-------|------|----------|
-| `GET` | `/api/v1/analytics/summary` | Активные объявления, бренды, средняя цена, источники |
+| `GET` | `/api/v1/analytics/summary` | Активные объявления, бренды, средняя цена, источники. Params: `brand_id[]`, `model_id[]`, `city[]`, `source[]`, `year[]`, `include_inactive` |
 | `GET` | `/api/v1/analytics/price-history` | История средних и медианных цен по периодам |
-| `GET` | `/api/v1/analytics/market-overview` | Топ марок, распределение по городам |
+| `GET` | `/api/v1/analytics/market-overview` | Топ марок (или моделей выбранной марки, с `slug` для ссылок). Params: `brand_id[]`, `model_id[]`, `city[]`, `source[]`, `year[]` |
 | `GET` | `/api/v1/analytics/profitability` | Рентабельность перепродажи по моделям (требует auth, PRO) |
 | `GET` | `/api/v1/analytics/profit-ranking` | Публичный рейтинг рентабельности (без auth) |
 | `GET` | `/api/v1/analytics/price-boxplot` | Ящики с усами: top-10 марок или модели выбранной марки |
@@ -342,8 +342,8 @@ users / subscription_plans / user_subscriptions             — пользова
 |-------|------|----------|
 | `GET` | `/api/v1/analytics/heatmap` | Тепловая карта: год × пробег (avg price и volume) |
 | `GET` | `/api/v1/analytics/liquidity` | Воронка ликвидности: дней до продажи по корзинам |
-| `GET` | `/api/v1/analytics/recent` | Лента свежих объявлений (live feed) |
-| `GET` | `/api/v1/analytics/geo` | Карта KZ: координаты городов + объявления и ср. цена |
+| `GET` | `/api/v1/analytics/recent` | Лента свежих объявлений (live feed). Params: `brand_id`, `model_id`, `city[]`, `source[]`, `limit` |
+| `GET` | `/api/v1/analytics/geo` | Карта KZ: координаты городов + объявления и ср. цена. Params: `brand_id[]`, `model_id[]`, `year[]`, `include_inactive`; слаги-синонимы городов агрегируются, города с 0 объявлений не возвращаются |
 | `GET` | `/api/v1/analytics/price-candles` | Свечи цен по времени: P5/Q1/median/Q3/P95 в бакетах day/week/month. `granularity=auto` (default) → week для ≤90д, month для остального. |
 | `GET` | `/api/v1/analytics/forecast` | Прогноз медианной цены V2: OLS на двух осях (KZT + USD-нормализованной), with FX-вклад. Params: `brand_id` (обяз.), `model_id?`, `year?`, `year_from?`, `year_to?`, `history_days=90`, `horizon_days=30`. Returns `{historical, forecast, trend_pct_per_month_kzt, trend_pct_per_month_usd, fx_impact_pct, r2_kzt, r2_usd, current_fx_rate, sample_size}`. |
 | `GET` | `/api/v1/analytics/backtest` | Ретро-тест стратегии "купить дешевле p25 группы, продать в течение N дней". Params: `brand_id?`, `model_id?`, `year_from?`, `year_to?`, `period_days=60`, `discount_threshold=0.15`, `hold_days=45`. Returns `{total_signals, hits, win_rate, avg_realized_margin, median_days_to_sell, top_winners[]}`. |
@@ -394,6 +394,10 @@ users / subscription_plans / user_subscriptions             — пользова
 - **newauto.kz TLS fingerprinting:** Сайт блокирует curl/aiohttp — возвращает пустой ответ. Работает только через `curl_cffi` с Chrome impersonation. Каталог (/catalog) содержит 241 модель без числовых ID; используем slug-ID вида `bmw-x5`.
 - **OLX.kz ID формат:** OLX сменил числовые ID (`ID12345`) на буквенно-цифровые (`IDqMNaw`). Парсер использует `r"ID([A-Za-z0-9]+)"` для поддержки обоих форматов.
 - **Next.js static export:** `output: 'export'` → все страницы статичны. Dynamic-компоненты (Leaflet и т.п.) **обязаны** грузиться через `next/dynamic({ ssr: false })`. Dynamic routes использовать через query-string (`?id=`, `?brand=`), не через `[param]`-папки.
+- **Render static БЕЗ catch-all rewrite:** в `render.yaml` у kolesa-frontend НЕ должно быть rewrite `/* → /index.html` — Render Static сам отдаёт `brands.html` для `/brands`. С rewrite'ом любой прямой URL показывал дашборд (deep-links и SEO мертвы). Убрано 2026-07-05.
+- **bcrypt закреплён на 4.0.1:** passlib 1.7.4 несовместим с bcrypt≥4.1 (удалён `bcrypt.__about__`) — `hash_password` кидает AttributeError, register отдаёт 500. Не обновляйте bcrypt без миграции с passlib.
+- **Санитизация моделей в `save_listing`:** mycar/avtorynok/olx приносят user-текст в model («camry тоета камри на разбор») — `_sanitize_model_name` режет до ведущих ASCII-токенов (макс 3) и пересчитывает slug, чтобы listing попадал в каноническую модель. Полностью кириллические имена не отбрасываются (режутся до 2 токенов), но slug у них пустой → модель не создаётся.
+- **OLX разметка (2026-07):** title карточки в `<h4>`, первый `<p>` — цена. Парсер классифицирует `<p>` по содержимому («тг» → цена, «км» → год/пробег, « - » → локация-дата); при следующей смене разметки смотреть `_parse_card`.
 
 ---
 

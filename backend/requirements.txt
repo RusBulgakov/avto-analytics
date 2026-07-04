@@ -4,6 +4,8 @@ asyncpg==0.29.0
 redis[hiredis]==5.0.2
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
+# passlib 1.7.4 несовместим с bcrypt>=4.1 (удалён bcrypt.__about__) → hash_password падает 500
+bcrypt==4.0.1
 python-multipart==0.0.9
 pydantic==2.6.3
 pydantic-settings==2.2.1

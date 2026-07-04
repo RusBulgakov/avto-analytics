@@ -84,6 +84,52 @@ _CITY_NORMALIZATIONS = {
 }
 
 
+# Слова, после которых «модель» из user-текста превращается в мусор
+# («camry тоета камри на разбор», «accent в продаже!!!», «alphard в идеальном
+# состоянии»). Модель = ведущая последовательность ASCII-токенов (латиница/
+# цифры), максимум 3 токена. Полностью кириллические имена (редкие легитимные
+# случаи типа «Газель Некст») оставляем, но режем до 2 токенов.
+_MODEL_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.\-+]*$")
+
+
+def _sanitize_model_name(raw: Optional[str]) -> Optional[str]:
+    """«camry тоета камри на разбор» → «Camry»; «Land Cruiser Prado» → как есть.
+    Возвращает None, если после чистки не осталось осмысленного имени."""
+    if not raw:
+        return None
+    tokens = re.sub(r"[!?()«»\"']", " ", str(raw)).split()
+    if not tokens:
+        return None
+    clean: list[str] = []
+    for t in tokens:
+        if _MODEL_TOKEN_RE.fullmatch(t):
+            clean.append(t)
+            if len(clean) >= 3:
+                break
+        else:
+            break
+    if clean:
+        # Однословные lower-имена приводим к Capitalize, чтобы upsert не
+        # перетирал канонический «Camry» на «camry» (правило name-конфликта
+        # выбирает новое имя при равном числе слов).
+        pretty = [t.capitalize() if t.isalpha() and t.islower() else t for t in clean]
+        name = " ".join(pretty)
+    else:
+        # Имя целиком не-ASCII (кириллица) — доверяем источнику, но режем хвост
+        name = " ".join(tokens[:2])
+    name = name.strip(" ,.-")
+    return name[:40] or None
+
+
+def _slugify(t: Optional[str]) -> Optional[str]:
+    if not t:
+        return None
+    import unicodedata
+    s = unicodedata.normalize("NFKD", t).encode("ascii", "ignore").decode()
+    s = re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
+    return s or None
+
+
 def _normalize_city(c: Optional[str]) -> Optional[str]:
     """
     Нормализует city value для сохранения в БД:
@@ -209,6 +255,14 @@ async def save_listing(conn: asyncpg.Connection, data: dict) -> str:
         )
 
     # 2. Upsert модели
+    # Санитизация: mycar/avtorynok/olx кладут в model сырой user-текст
+    # («camry тоета камри на разбор») — режем до канонического имени и
+    # ПЕРЕсчитываем slug, иначе мусорный slug плодит мусорные модели.
+    if data.get("model_name") or data.get("model_slug"):
+        raw_model = data.get("model_name") or (data.get("model_slug") or "").replace("-", " ")
+        clean_model = _sanitize_model_name(raw_model)
+        data = {**data, "model_name": clean_model, "model_slug": _slugify(clean_model)}
+
     if data.get("brand_slug") and data.get("model_slug"):
         # Предпочитаем model_name которое парсер уже извлёк (multi-word типа
         # "Land Cruiser Prado"). Старые парсеры его не передают — fallback

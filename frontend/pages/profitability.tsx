@@ -180,9 +180,9 @@ export default function ProfitabilityPage() {
                                     style={{ fontSize: 13, padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text)', cursor: 'pointer', minWidth: 130 }}
                                 >
                                     <option value="">все</option>
-                                    {brands?.map(b => (
+                                    {brands?.filter(b => b.listings_count > 0).map(b => (
                                         <option key={b.id} value={b.id}>
-                                            {b.name} ({fmt.int(b.listings_count)})
+                                            {fmt.brandName(b.name)} ({fmt.int(b.listings_count)})
                                         </option>
                                     ))}
                                 </select>
@@ -356,7 +356,7 @@ export default function ProfitabilityPage() {
                                                     <span className="rank">{i + 1}</span>
                                                 </td>
                                                 <td>
-                                                    <strong>{r.brand}</strong>{' '}
+                                                    <strong>{fmt.brandName(r.brand)}</strong>{' '}
                                                     <span className="dim">{r.model}</span>
                                                 </td>
                                                 <td className="num">
