@@ -4,7 +4,7 @@
 
 ---
 
-## 2026-07-05 — QA-спринт: 16 багов из полного UI-прохода (t-0019…t-0034) (9a0f397)
+## 2026-07-05 — QA-спринт: 16 багов из полного UI-прохода (t-0019…t-0034) (cbf6b5d)
 
 ### Fixed (critical)
 - **Deep-links мертвы (t-0019):** убран catch-all rewrite `/* → /index.html` из `render.yaml` — Render отдавал дашборд для ЛЮБОГО пути (F5 на /brands, /listing?id=, /auth/login → главная). Next static export кладёт отдельные .html, Render Static отдаёт их сам.
