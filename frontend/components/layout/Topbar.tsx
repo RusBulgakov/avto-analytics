@@ -19,6 +19,7 @@ const NAV = [
     { href: '/brands', label: 'Марки', match: (p: string) => p.startsWith('/brand') || p.startsWith('/model') },
     { href: '/profitability', label: 'Рентабельность', match: (p: string) => p.startsWith('/profit') },
     { href: '/forecast', label: 'Прогноз', match: (p: string) => p.startsWith('/forecast') },
+    { href: '/articles', label: 'Статьи', match: (p: string) => p.startsWith('/articles') },
 ];
 
 export default function Topbar() {

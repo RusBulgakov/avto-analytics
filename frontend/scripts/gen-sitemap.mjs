@@ -10,7 +10,7 @@
 // Добавление новой индексируемой страницы = одна строка в ROUTES ниже.
 // Не включаем: /listing и /model (query-string driven детальные страницы,
 // без параметров бессмысленны), /auth/* (не для индексации, закрыто в robots).
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, readdirSync, readFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -24,8 +24,28 @@ const ROUTES = [
     { path: '/brands', changefreq: 'daily', priority: '0.8' },
     { path: '/profitability', changefreq: 'daily', priority: '0.8' },
     { path: '/forecast', changefreq: 'weekly', priority: '0.7' },
-    // { path: '/articles', changefreq: 'weekly', priority: '0.7' }, // t-0008
+    { path: '/articles', changefreq: 'weekly', priority: '0.7' },
 ];
+
+// ── Статьи (t-0008): file-based контент из content/articles/*.md ──
+// Каждый файл = страница /articles/<slug> (slug = имя файла).
+// Дублируем мини-парсер frontmatter из lib/articles.ts: скрипт обязан
+// оставаться dependency-free и не может импортировать TS-модуль.
+const articlesDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'content', 'articles');
+if (existsSync(articlesDir)) {
+    for (const file of readdirSync(articlesDir).filter(f => f.endsWith('.md')).sort()) {
+        const raw = readFileSync(join(articlesDir, file), 'utf8');
+        // lastmod для статьи семантически корректен — это frontmatter-дата
+        // публикации контента (в отличие от «даты билда» для остальных страниц)
+        const date = raw.match(/^---\r?\n[\s\S]*?^date:\s*["']?(\d{4}-\d{2}-\d{2})["']?\s*$[\s\S]*?\r?\n---/m)?.[1];
+        ROUTES.push({
+            path: `/articles/${file.replace(/\.md$/, '')}`,
+            changefreq: 'monthly',
+            priority: '0.6',
+            lastmod: date,
+        });
+    }
+}
 
 /** Минимальный XML-escape для значений внутри тегов. */
 const xml = s => String(s)
@@ -33,13 +53,16 @@ const xml = s => String(s)
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;');
 
-// <lastmod> намеренно не пишем: по спецификации sitemaps.org он опционален,
-// а «дата билда» — семантически неверное значение (контент страниц не менялся).
+// <lastmod> для обычных страниц намеренно не пишем: по спецификации
+// sitemaps.org он опционален, а «дата билда» — семантически неверное значение
+// (контент страниц не менялся). Исключение — статьи: у них есть честная
+// frontmatter-дата публикации (r.lastmod).
 const sitemap = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 ${ROUTES.map(
     r => `  <url>
-    <loc>${xml(SITE_URL + r.path)}</loc>
+    <loc>${xml(SITE_URL + r.path)}</loc>${r.lastmod ? `
+    <lastmod>${xml(r.lastmod)}</lastmod>` : ''}
     <changefreq>${xml(r.changefreq)}</changefreq>
     <priority>${xml(r.priority)}</priority>
   </url>`

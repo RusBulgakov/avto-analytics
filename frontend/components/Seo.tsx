@@ -22,9 +22,14 @@ interface SeoProps {
     path: string;
     /** Абсолютный URL или путь от корня сайта до OG-картинки (опционально) */
     ogImage?: string;
+    /** og:type — по умолчанию "website"; для статей передавать "article" */
+    ogType?: 'website' | 'article';
+    /** ISO-дата публикации (YYYY-MM-DD) — рендерит article:published_time.
+     *  Имеет смысл только вместе с ogType="article". */
+    publishedTime?: string;
 }
 
-export default function Seo({ title, description, path, ogImage }: SeoProps) {
+export default function Seo({ title, description, path, ogImage, ogType = 'website', publishedTime }: SeoProps) {
     const url = `${SITE_URL}${path}`;
     const image = ogImage
         ? /^https?:\/\//.test(ogImage)
@@ -41,7 +46,10 @@ export default function Seo({ title, description, path, ogImage }: SeoProps) {
             <meta key="viewport" name="viewport" content="width=device-width, initial-scale=1" />
             <link key="canonical" rel="canonical" href={url} />
 
-            <meta key="og:type" property="og:type" content="website" />
+            <meta key="og:type" property="og:type" content={ogType} />
+            {ogType === 'article' && publishedTime && (
+                <meta key="article:published_time" property="article:published_time" content={publishedTime} />
+            )}
             <meta key="og:site_name" property="og:site_name" content={SITE_NAME} />
             <meta key="og:locale" property="og:locale" content="ru_RU" />
             <meta key="og:title" property="og:title" content={title} />

@@ -227,24 +227,27 @@ NEXT_PUBLIC_SITE_URL=https://kolesa-frontend.onrender.com
 │   ├── scripts/
 │   │   └── gen-sitemap.mjs        # Генерация sitemap.xml/robots.txt из NEXT_PUBLIC_SITE_URL (npm prebuild)
 │   ├── components/
-│   │   ├── Seo.tsx                # SEO-теги страницы: canonical, OG, twitter:card
+│   │   ├── Seo.tsx                # SEO-теги страницы: canonical, OG (+og:type=article), twitter:card
 │   │   ├── layout/                # Topbar (с live-тикером), FilterBar
 │   │   ├── ui/                    # KPI, Badge, FilterDropdown
 │   │   ├── charts/                # PriceChart, BoxPlot, Heatmap, Funnel,
 │   │   │                          # KZMap (обёртка) + KZMapInner (Leaflet client-only)
 │   │   └── feed/                  # RecentFeed
+│   ├── content/
+│   │   └── articles/*.md          # SEO-статьи: frontmatter (title/description/date) + markdown
 │   ├── pages/
 │   │   ├── index.tsx              # Дашборд (KPIs + chart + feed + heatmap + funnel + map + boxplot)
 │   │   ├── brands.tsx             # Каталог марок
 │   │   ├── profitability.tsx      # Рейтинг рентабельности
 │   │   ├── forecast.tsx           # Прогноз цен: OLS-регрессия V3 (KZT + USD)
+│   │   ├── articles/              # Блог: index (список) + [slug] (getStaticPaths → /articles/<slug>)
 │   │   ├── model.tsx              # Детали модели (?brand=&model=)
 │   │   ├── listing.tsx            # Детали объявления (?id=)
 │   │   └── auth/                  # login, register
 │   ├── hooks/                     # useUsdKzt, useSyncFiltersWithUrl
 │   ├── store/filters.ts           # zustand filter store с URL-sync
 │   ├── styles/globals.css         # Все токены + виджеты
-│   └── lib/                       # api.ts, format.ts
+│   └── lib/                       # api.ts, format.ts, articles.ts (md → html, build-time only)
 ├── parsers/
 │   ├── requirements.txt           # Зависимости парсеров
 │   ├── common/
@@ -471,7 +474,8 @@ price_history_archive (те же колонки, что price_history, + archive
 - **avtorynok.kz пагинация:** Сайт возвращает одни и те же ~16 объявлений на любом номере страницы. Парсер останавливается после первого повтора ID (стоп по `seen_ids`).
 - **newauto.kz TLS fingerprinting:** Сайт блокирует curl/aiohttp — возвращает пустой ответ. Работает только через `curl_cffi` с Chrome impersonation. Каталог (/catalog) содержит 241 модель без числовых ID; используем slug-ID вида `bmw-x5`.
 - **OLX.kz ID формат:** OLX сменил числовые ID (`ID12345`) на буквенно-цифровые (`IDqMNaw`). Парсер использует `r"ID([A-Za-z0-9]+)"` для поддержки обоих форматов.
-- **Next.js static export:** `output: 'export'` → все страницы статичны. Dynamic-компоненты (Leaflet и т.п.) **обязаны** грузиться через `next/dynamic({ ssr: false })`. Dynamic routes использовать через query-string (`?id=`, `?brand=`), не через `[param]`-папки.
+- **Next.js static export:** `output: 'export'` → все страницы статичны. Dynamic-компоненты (Leaflet и т.п.) **обязаны** грузиться через `next/dynamic({ ssr: false })`. Dynamic routes с данными из БД — через query-string (`?id=`, `?brand=`), не через `[param]`-папки. Исключение: `[param]`-папки допустимы, когда ВСЕ пути известны на билде (`getStaticPaths` + `fallback: false`) — так работает блог `/articles/[slug]` (контент — файлы `content/articles/*.md` в репо).
+- **Блог /articles:** статьи — markdown-файлы с frontmatter (`title`/`description`/`date`) в `frontend/content/articles/`. Новая статья = один `.md`-файл: страница, список и sitemap подхватывают её автоматически на билде. Рендер markdown — `marked` (build-time, в клиентский бандл не попадает); canonical/OG/JSON-LD Article на каждой странице.
 
 ---
 

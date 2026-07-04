@@ -4,7 +4,24 @@
 
 ---
 
-## 2026-07-05 — Insights API: pre-computed агрегаты для статей (t-0007)
+## 2026-07-05 — Раздел /articles: SEO-блог на markdown со статическим экспортом (t-0008)
+
+### Added
+- **`frontend/content/articles/*.md`** — файловый контент блога: плоский frontmatter (`title`, `description`, `date`) + markdown-тело; slug статьи = имя файла. Первая статья — «Как меняются цены на авто в Казахстане: что показывают данные» (вводная про источники данных и insights-эндпоинты t-0007).
+- **`frontend/lib/articles.ts`** — build-time контент-пайплайн: ручной парсер frontmatter (~20 строк вместо gray-matter — нужны только плоские `key: value`) + рендер markdown через `marked`. Используется ТОЛЬКО из `getStaticProps`/`getStaticPaths` (node:fs), в клиентский бандл не попадает (проверено: `marked` отсутствует в chunks).
+- **`frontend/pages/articles/index.tsx`** — список статей (свежие первыми), `getStaticProps`.
+- **`frontend/pages/articles/[slug].tsx`** — страница статьи. **Архитектурный выбор:** `getStaticPaths` + `getStaticProps` (`fallback: false`), а НЕ query-string `/articles/view?slug=…`. Оба совместимы с `output: 'export'`, но SEO-статьям нужны реальные отдельные URL: у query-string-страницы один canonical на все статьи, что убивает индексацию; все пути известны на билде из файлов. На странице: canonical + og:* (`og:type=article`, `article:published_time`) через `<Seo/>` + JSON-LD `Article` (headline, datePublished, author/publisher Organization).
+- **CSS** — блок `.article-*` в `globals.css` (карточки списка + читабельная типографика тела статьи), без новых CSS-фреймворков.
+- **Зависимость:** `marked` ^12 (единственная новая; MDX-тулчейн `@next/mdx`/`next-mdx-remote` отклонён как избыточный — компоненты в тексте статей не нужны).
+
+### Changed
+- **`frontend/components/Seo.tsx`** — новые опциональные пропсы `ogType` (`website`|`article`, default `website`) и `publishedTime` → `article:published_time`. Отдельный Article-компонент не заводился сознательно (расширение вместо дублирования).
+- **`frontend/components/layout/Topbar.tsx`** — пункт «Статьи» в NAV (desktop + mobile меню используют один массив).
+- **`frontend/scripts/gen-sitemap.mjs`** — раскомментирован `/articles` + автоглоб `content/articles/*.md`: каждая статья попадает в sitemap как `/articles/<slug>` c `lastmod` из frontmatter-даты (для статей lastmod семантически честен, в отличие от «даты билда» у остальных страниц). Скрипт остался dependency-free (node:fs), мини-парсер frontmatter продублирован с пометкой.
+- **README** — структура проекта (`content/`, `pages/articles/`, `lib/articles.ts`), уточнена заметка про dynamic routes: `[param]`-папки допустимы при путях, известных на билде.
+
+### Impact
+- Новая статья = один `.md`-файл в `content/articles/` — страница, список, навигация и sitemap подхватываются автоматически на билде, без кода. `npm run build` проходит; `out/articles.html` и `out/articles/<slug>.html` генерируются статически (12 страниц, SSR/ISR не используется, `getServerSideProps` в проекте нет).
 
 ### Added
 - **`backend/app/api/v1/endpoints/insights.py`** — новая группа публичных эндпоинтов `/api/v1/analytics/insights/*` (отдельный модуль, чтобы не раздувать analytics.py — тот уже 2000+ строк):
