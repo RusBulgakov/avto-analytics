@@ -6,6 +6,7 @@ import Seo from '@/components/Seo';
 import Topbar from '@/components/layout/Topbar';
 import Badge from '@/components/ui/Badge';
 import { analyticsApi } from '@/lib/api';
+import { downloadCsv, sanitizeFilenamePart, toCsv } from '@/lib/csv';
 import { fmt } from '@/lib/format';
 
 interface ProfitRow {
@@ -106,6 +107,53 @@ export default function ProfitabilityPage() {
     }
     const sortIcon = (field: SortField) =>
         field === sortBy ? (sortDir === 'desc' ? ' ▼' : ' ▲') : '';
+
+    // Экспорт текущей (отфильтрованной + отсортированной) таблицы в CSV.
+    // Числа — сырые машиночитаемые значения (без ₸ и разделителей разрядов).
+    function handleExportCsv() {
+        if (!sortedData.length) return;
+        const riskLabel = { low: 'низкий', medium: 'средний', high: 'высокий' } as const;
+        const headers = [
+            '#', 'Марка', 'Модель', 'Год',
+            'Покупка (p25)', 'Продажа (медиана)', 'Маржа %',
+            'Дней до продажи', 'Объём', 'Риск',
+        ];
+        const rows = sortedData.map((r, i) => [
+            i + 1,
+            r.brand,
+            r.model,
+            r.year,
+            r.buy_price,
+            r.sell_price,
+            r.margin_pct != null ? Number(r.margin_pct.toFixed(1)) : null,
+            r.median_days_to_sell != null ? Math.round(r.median_days_to_sell) : null,
+            r.volume,
+            riskLabel[r.risk],
+        ]);
+
+        // Имя файла: дата + активные фильтры (марка/модель/город/годы/выборка)
+        // Локальная дата, не toISOString() — UTC может отставать на день от часового пояса пользователя
+        const d = new Date();
+        const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        const yearPart =
+            yearFrom && yearTo ? `${yearFrom}-${yearTo}`
+            : yearFrom ? `от-${yearFrom}`
+            : yearTo ? `до-${yearTo}`
+            : null;
+        const filterParts = [
+            brandId ? brands?.find(b => b.id === brandId)?.name : null,
+            modelId ? models?.find(m => m.id === modelId)?.name : null,
+            city,
+            yearPart,
+            includeJunk ? 'все' : null,
+        ]
+            .filter((p): p is string => Boolean(p))
+            .map(sanitizeFilenamePart)
+            .filter(Boolean);
+        const filename = ['profitability', date, ...filterParts].join('_') + '.csv';
+
+        downloadCsv(filename, toCsv(headers, rows));
+    }
 
     return (
         <>
@@ -291,6 +339,27 @@ export default function ProfitabilityPage() {
                                         </button>
                                     ))}
                                 </div>
+                            </label>
+                            {/* Экспорт CSV */}
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: 'var(--text-muted)' }}>
+                                <span className="uppercase">экспорт</span>
+                                <button
+                                    type="button"
+                                    onClick={handleExportCsv}
+                                    disabled={!sortedData.length}
+                                    title="Скачать текущую таблицу (с учётом фильтров и сортировки) в CSV"
+                                    style={{
+                                        fontSize: 13,
+                                        padding: '4px 12px',
+                                        borderRadius: 6,
+                                        border: '1px solid var(--border)',
+                                        background: 'var(--bg-card)',
+                                        color: sortedData.length ? 'var(--text)' : 'var(--text-muted)',
+                                        cursor: sortedData.length ? 'pointer' : 'not-allowed',
+                                    }}
+                                >
+                                    ⬇ CSV
+                                </button>
                             </label>
                         </div>
                     </div>
