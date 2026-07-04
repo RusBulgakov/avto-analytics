@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.database import init_db
+from app.core.rate_limit import RateLimitMiddleware
 from app.api.v1.router import api_router
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,16 @@ app = FastAPI(
     lifespan=lifespan,
     docs_url="/api/docs",
     redoc_url="/api/redoc",
+)
+
+# Rate limiter добавлен ДО CORSMiddleware намеренно: в Starlette последний
+# add_middleware — внешний, поэтому CORS оборачивает лимитер и 429-ответы
+# тоже получают CORS-заголовки (иначе браузер не смог бы прочитать 429).
+app.add_middleware(
+    RateLimitMiddleware,
+    enabled=settings.RATE_LIMIT_ENABLED,
+    global_rate=settings.RATE_LIMIT_GLOBAL,
+    heavy_rate=settings.RATE_LIMIT_HEAVY,
 )
 
 app.add_middleware(

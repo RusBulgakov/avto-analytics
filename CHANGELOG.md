@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-07-05 — Rate limiting на публичные API endpoints (t-0005)
+
+### Added
+- **`backend/app/core/rate_limit.py`** — собственный in-memory rate limiter (pure-ASGI middleware, fixed window, per-IP), **без новых зависимостей** (slowapi не нужен: один инстанс на Render free-tier, shared-состояние избыточно). Два класса лимитов: глобальный `120/minute` на все `/api/*` (env `RATE_LIMIT_GLOBAL`) и строгий `20/minute` (env `RATE_LIMIT_HEAVY`) на тяжёлые SQL-эндпоинты — `/profit-ranking`, `/profitability`, `/backtest`, `/forecast` (heavy-запросы считаются и в глобальном окне). Выключатель `RATE_LIMIT_ENABLED` (default `true`). Формат лимитов: `"N/second|minute|hour|day"`.
+- **429-ответ:** JSON `{detail, retry_after_seconds}` + заголовок `Retry-After` (секунды до сброса окна, округление вверх, минимум 1).
+- **Определение клиента за прокси Render:** leftmost-IP из `X-Forwarded-For`, fallback — peer address. Без этого все пользователи делили бы IP прокси и лимитер наказывал бы всех сразу.
+- **Исключения:** `/health`, `/api/docs`, `/api/redoc`, `/openapi.json`, все OPTIONS (CORS preflight) и пути вне `/api/`.
+- **`backend/tests/test_rate_limit.py`** — 9 pytest'ов на минимальном FastAPI-приложении без БД: N проходит / N+1 → 429 c `Retry-After`; heavy строже global; heavy считается в global; `/health` не лимитируется; `X-Forwarded-For` разделяет клиентов; OPTIONS не лимитируется; выключатель; сброс окна; парсер формата.
+
+### Changed
+- **`backend/app/main.py`** — `RateLimitMiddleware` подключён ДО `CORSMiddleware` (в Starlette последний `add_middleware` — внешний), поэтому CORS оборачивает лимитер и 429-ответы тоже получают CORS-заголовки — браузер может прочитать ошибку.
+- **`backend/app/core/config.py`** — новые настройки `RATE_LIMIT_ENABLED`, `RATE_LIMIT_GLOBAL`, `RATE_LIMIT_HEAVY`.
+
+### Trade-offs (осознанные)
+- Fixed window (не sliding): на границе окна возможен burst до 2× лимита — для защиты тяжёлых SQL от долбёжки достаточно.
+- Состояние в памяти процесса: сбрасывается при рестарте, при нескольких инстансах каждый считает независимо (сейчас инстанс один). Защита от роста памяти — prune истёкших окон при 10k+ бакетов.
+
+### Impact
+- Самый тяжёлый публичный эндпоинт `/api/v1/analytics/profit-ranking` больше нельзя безнаказанно долбить: 21-й запрос за минуту с одного IP получает 429. Обычная навигация по дашборду (~10–20 запросов на загрузку страницы) в лимиты не упирается. Новых зависимостей нет, переменные на Render по умолчанию задавать не нужно.
+
+---
+
 ## 2026-07-05 — Холодная архивация: inactive >30d → listings_archive (t-0003)
 
 ### Added

@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     # CORS
     BACKEND_CORS_ORIGINS: List[str] = ["http://localhost:3000"]
 
+    # Rate limiting (см. app/core/rate_limit.py). Формат: "N/second|minute|hour|day"
+    RATE_LIMIT_ENABLED: bool = True
+    RATE_LIMIT_GLOBAL: str = "120/minute"   # все /api/* эндпоинты, per-IP
+    RATE_LIMIT_HEAVY: str = "20/minute"     # profit-ranking, profitability, backtest, forecast
+
     @property
     def db_url(self) -> str:
         if self.DATABASE_URL:

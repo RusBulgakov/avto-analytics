@@ -186,6 +186,11 @@ POSTGRES_PORT=5432
 # Backend
 SECRET_KEY=your_jwt_secret_here
 
+# Rate limiting (опционально, defaults в скобках; формат "N/second|minute|hour|day")
+RATE_LIMIT_ENABLED=true       # (true) выключатель лимитера
+RATE_LIMIT_GLOBAL=120/minute  # (120/minute) per-IP лимит на все /api/*
+RATE_LIMIT_HEAVY=20/minute    # (20/minute) per-IP лимит на profit-ranking/profitability/backtest/forecast
+
 # Telegram (опционально)
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
@@ -210,7 +215,7 @@ NEXT_PUBLIC_SITE_URL=https://kolesa-frontend.onrender.com
 ├── backend/
 │   └── app/
 │       ├── api/v1/endpoints/      # analytics.py (все /api/v1/analytics/*), auth.py
-│       └── core/                  # config, database, security
+│       └── core/                  # config, database, security, rate_limit
 ├── database/
 │   ├── init.sql                   # Схема БД + seed данные
 │   └── migrations/                # 001 liveness last_checked_at, 002 listings_archive
@@ -373,6 +378,16 @@ price_history_archive (те же колонки, что price_history, + archive
 ---
 
 ## 🔌 API
+
+### Rate limiting
+
+Все `/api/*` эндпоинты защищены per-IP лимитером (in-memory fixed window, `backend/app/core/rate_limit.py`):
+
+- **Глобальный лимит:** `120/minute` на IP (env `RATE_LIMIT_GLOBAL`).
+- **Тяжёлые эндпоинты** — `/profit-ranking`, `/profitability`, `/backtest`, `/forecast`: строже, `20/minute` (env `RATE_LIMIT_HEAVY`); их запросы также считаются в глобальном лимите.
+- **Исключены:** `/health`, `/api/docs`, `/api/redoc`, `/openapi.json`, CORS preflight (OPTIONS).
+- При превышении — `429` с JSON-телом и заголовком `Retry-After` (секунды до сброса окна).
+- Выключатель: `RATE_LIMIT_ENABLED=false`. Клиентский IP берётся из `X-Forwarded-For` (leftmost, за прокси Render), fallback — peer address.
 
 ### Аналитика — сводные
 
