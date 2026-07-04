@@ -367,7 +367,20 @@ async def save_listing(conn: asyncpg.Connection, data: dict) -> str:
                 is_active = TRUE,
                 -- Обновляем is_in_stock только если парсер прислал известное
                 -- значение (TRUE/FALSE). NULL не перезаписывает existing.
-                is_in_stock = COALESCE(EXCLUDED.is_in_stock, listings.is_in_stock)
+                is_in_stock = COALESCE(EXCLUDED.is_in_stock, listings.is_in_stock),
+                -- Бэкфилл: у старых OLX-строк brand/model пустые (парсер писал
+                -- цену в title до 2026-07) — дозаполняем, но не перетираем.
+                brand_id = COALESCE(listings.brand_id, EXCLUDED.brand_id),
+                model_id = COALESCE(listings.model_id, EXCLUDED.model_id),
+                year = COALESCE(listings.year, EXCLUDED.year),
+                mileage_km = COALESCE(listings.mileage_km, EXCLUDED.mileage_km),
+                -- Title чиним только если старый — артефакт «цена вместо title»
+                title = CASE
+                    WHEN EXCLUDED.title IS NOT NULL
+                         AND (listings.title IS NULL OR listings.title LIKE '%тг.%')
+                    THEN EXCLUDED.title
+                    ELSE listings.title
+                END
         RETURNING id, (xmax = 0) AS is_new
         """,
         data["source"], data["external_id"],
