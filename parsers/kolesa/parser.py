@@ -20,6 +20,7 @@ from typing import Optional
 
 from parsers.common.http_client import fetch, IPBlockedError
 from parsers.common.db import get_pool, save_listing
+from parsers.common.city_normalizer import normalize_city
 
 logger = logging.getLogger("parser.kolesa")
 
@@ -361,14 +362,9 @@ def _parse_item(obj: dict) -> Optional[dict]:
 
         price_kzt = obj.get("unitPrice")
 
-        # Город — нормализация: "0" → None, "semei" → "semey"
-        city = obj.get("city")
-        if city in ("0", "", None):
-            city = None
-        elif isinstance(city, str):
-            city = city.strip().lower()
-            CITY_ALIASES = {"semei": "semey"}
-            city = CITY_ALIASES.get(city, city)
+        # Город — единая нормализация (parsers/common/city_normalizer):
+        # "0"/"" → None, "semei" → "semey", алиас → canonical latin slug
+        city = normalize_city(obj.get("city"))
 
         region = obj.get("region")
 

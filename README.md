@@ -261,11 +261,14 @@ NEXT_PUBLIC_SITE_URL=https://kolesa-frontend.onrender.com
 │   ├── requirements.txt           # Зависимости парсеров
 │   ├── common/
 │   │   ├── db.py                  # asyncpg пул, save_listing, deactivate_old_listings (168h)
+│   │   ├── city_normalizer.py     # Единая нормализация городов: alias-карта (кириллица/транслиты/KZ) → latin slug
 │   │   ├── http_client.py         # curl_cffi fetch + IPBlockedError + per-error retry strategy
 │   │   ├── proxy_manager.py       # Загрузка и проверка прокси (семафор 200)
 │   │   ├── notifier.py            # Telegram: send_*, send_*_with_id, edit_telegram_message
 │   │   ├── deactivate.py          # Entrypoint для deactivate_old_listings
 │   │   ├── archive_old.py         # Холодная архивация: inactive >30d → listings_archive (dry-run default)
+│   │   ├── audit_brands.py        # Read-only аудит: популярные бренды kolesa без своего фида
+│   │   ├── city_dry_run.py        # Read-only dry-run: DISTINCT city old → new (перед любым bulk-UPDATE)
 │   │   └── refresh_proxies.py     # Standalone обновление пула прокси
 │   ├── kolesa/
 │   │   ├── parser.py              # JSON-extraction, 297 фидов + sharding + Telegram progress
@@ -478,6 +481,7 @@ parser_runs   (id, source_id, shard_index, shard_count, saved, new_count,
 
 ## 🐛 Известные особенности
 
+- **Нормализация городов (`parsers/common/city_normalizer.py`):** все парсеры пишут город через единый `normalize_city()` (вызывается в `save_listing`): кириллица/транслиты/казахские названия → canonical latin slug (`Алматы`/`Alma-Ata` → `almaty`, `Aqtau`/`Ақтау` → `aktau`, `Oskemen`/`Усть-Каменогорск` → `ust-kamenogorsk`). Canonical slug, отображаемый на карте, обязан иметь координаты в `_CITY_COORDS` (`backend/.../analytics.py`). **Урок инцидента:** суффикс `" - ..."` режется только с пробелом ПЕРЕД дефисом — паттерн `\s*-\s*` без обязательных пробелов однажды испортил 18,481 `ust-kamenogorsk` → `ust`; дефисы внутри слов неприкосновенны (регресс-тест в `tests/test_city_normalizer.py`). Перед любым bulk-UPDATE городов — обязательный dry-run `python -m parsers.common.city_dry_run` (read-only, печатает old → new по всем distinct).
 - **Kolesa 5000-лимит на фид:** kolesa.kz глушит пагинацию на 250 страниц × 20 = 5000 объявлений. Поэтому для тяжёлых брендов (Toyota, Lada, Hyundai) одного brand-feed недостаточно — добавлены **model-level feed'ы** в `MODEL_FEEDS`. Каждый под-фид имеет свой 5000-лимит. Toyota: покрытие 5k → ~75k (brand + 14 моделей).
 - **Kolesa anti-bot из GHA:** kolesa.kz агрессивно блокирует burst запросов из Azure-датацентра. Эмпирически 4 шарда × 3 concurrent (12 одновременных) → IP блок за ~10 минут; ~80 req/min ловит накопительный бан через ~4ч. **Текущая рабочая конфигурация: 3 шарда × 2 concurrent (6 одновременных) + delay 4–7с (~66 req/min)** — укладывается в 350-мин timeout без бана. Не повышайте rate/concurrency — потеряете весь прогон.
 - **Kolesa structured exit codes:** парсер возвращает `0`/`1`/`2`/`10` в зависимости от исхода. Workflow gate'ит `deactivate-old` через `if: success()` → при `IPBlockedError` или partial-успехе deactivate **не запускается**, сохраняем существующие данные. Без этого 1 неудачный прогон стирал 11k+ живых объявлений (произошло 2026-04-23).
