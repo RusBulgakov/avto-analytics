@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-07-05 — Kolesa Phase 2: discovery early-stop + parse_cursor, флаг-гейтед и ВЫКЛЮЧЕН (t-0017)
+
+### Added
+- **`parsers/kolesa/early_stop.py`** (новый): реализация спеки §5.3 — (1) newest-first сортировка фидов через query-param `KOLESA_SORT_PARAM` (default `sort_by=add_date-desc`; точное имя параметра в спеке помечено «подтвердить на сайте», поэтому оно env-конфигурируемо — неверная догадка чинится переменной, не кодом); (2) `EarlyStopTracker` — остановка фида после `KOLESA_EARLY_STOP_PAGES` (default 3) подряд страниц с 0 новых объявлений («новый» = `is_new` из `save_listing`, `RETURNING (xmax=0)`, т.е. чистый INSERT — доп. запросов не нужно, `parse_city` уже считает `page_new`); (3) резюмируемый курсор `parse_cursor` — чтение на старте фида (продолжение с `last_page+1` в рамках текущего `cycle_id`), best-effort запись после каждой страницы. `cycle_id` = `KOLESA_CYCLE_ID` env или UTC-дата `YYYY-MM-DD` (один discovery-цикл в сутки; новый день = фид с начала).
+- **`database/migrations/004_parse_cursor.sql`** + зеркало в `database/init.sql`: `parse_cursor(source_id, feed_key TEXT, last_page INT, cycle_id TEXT, updated_at, PK(source_id, feed_key))`. Применять вручную в Neon SQL Editor (idempotent); до миграции при включённом флаге курсор деградирует в warning, фид не падает.
+- **`tests/test_early_stop.py`** (18 тестов): подсчёт подряд-нулевых страниц, сброс на новых, порог/флаг/sort-param/cycle_id из env, `enabled=False` никогда не останавливает.
+
+### Changed
+- **`parsers/kolesa/parser.py`** — три хука в `parse_city`, все строго под `if es_enabled` (`KOLESA_EARLY_STOP=1`): sort-param к URL, чтение курсора перед циклом страниц, запись курсора + проверка early-stop после страницы. **Default `KOLESA_EARLY_STOP=0` → ни одна ветка не активна, поведение парсера идентично прежнему** (ни запросов к `parse_cursor`, ни изменения URL). Anti-bot параметры (3 шарда × 2 concurrent, delay) не тронуты; cron `kolesa_full.yml` и deactivate-логика не тронуты.
+
+### Impact
+- **Флаг сознательно ВЫКЛЮЧЕН по умолчанию.** По дизайну (спека §5.3/§5.4) early-stop отдаёт детекцию «жив/продан» liveness-sweep'у, а liveness сейчас заблокирован: kolesa.kz тарпитит detail-GET'ы с IP GitHub Actions (t-0016). Включение early-stop без liveness = глубокие страницы теряют бампы `last_seen_at` → слепой 168h-deactivate массово закроет живые объявления.
+- **Шаги владельца для включения (позже):** 1) применить `004_parse_cursor.sql` в Neon; 2) вручную проверить на kolesa.kz, что `?sort_by=add_date-desc` даёт «по дате добавления, свежие первыми» (иначе поправить `KOLESA_SORT_PARAM`); 3) принять решение по liveness (t-0016); 4) только после этого выставить `KOLESA_EARLY_STOP=1` в env workflow.
+
+---
+
 ## 2026-07-05 — Страница сравнения моделей /compare (t-0012)
 
 ### Added

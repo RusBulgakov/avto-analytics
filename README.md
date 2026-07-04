@@ -179,6 +179,22 @@ PARSER_ALERT_MIN_BASE  — шумовой порог (default 100): baseline-м�
                          значения не сравнивается — мелкие фиды не алертят ложно
 ```
 
+### Kolesa Phase 2 — discovery early-stop (env parsers/kolesa/early_stop.py; флаг ВЫКЛЮЧЕН)
+
+```
+KOLESA_EARLY_STOP        — '1' включает newest-first сортировку + early-stop + parse_cursor.
+                           Default '0' = поведение парсера полностью прежнее.
+                           НЕ ВКЛЮЧАТЬ, пока liveness-sweep заблокирован (t-0016) —
+                           см. «Известные особенности» ниже
+KOLESA_EARLY_STOP_PAGES  — сколько подряд страниц с 0 новых объявлений останавливают
+                           фид (default 3, минимум 1)
+KOLESA_SORT_PARAM        — query-param сортировки «свежие первыми» (default
+                           'sort_by=add_date-desc'; перед включением проверить на
+                           kolesa.kz вручную; пустая строка = не добавлять)
+KOLESA_CYCLE_ID          — идентификатор цикла discovery для parse_cursor
+                           (default: UTC-дата YYYY-MM-DD — один цикл в сутки)
+```
+
 ### Локально (.env)
 
 ```env
@@ -240,7 +256,7 @@ NEXT_PUBLIC_SENTRY_DSN=
 │       └── core/                  # config, database, security, rate_limit
 ├── database/
 │   ├── init.sql                   # Схема БД + seed данные
-│   └── migrations/                # 001 liveness last_checked_at, 002 listings_archive, 003 parser_runs
+│   └── migrations/                # 001 liveness last_checked_at, 002 listings_archive, 003 parser_runs, 004 parse_cursor
 ├── frontend/
 │   ├── public/                    # robots.txt + sitemap.xml — build-артефакты (не в git, создаёт prebuild-скрипт)
 │   ├── scripts/
@@ -407,6 +423,12 @@ price_history_archive (те же колонки, что price_history, + archive
 -- между собой. status='degraded' — прогон упал ниже порога и baseline не понижает.
 parser_runs   (id, source_id, shard_index, shard_count, saved, new_count,
                active_after, status 'ok'|'degraded', finished_at)
+
+-- Курсор discovery-парсера kolesa (миграция 004, t-0017): резюмируемость фидов.
+-- Пишется/читается parsers/kolesa/early_stop.py ТОЛЬКО при KOLESA_EARLY_STOP=1
+-- (флаг по умолчанию выключен). feed_key = slug фида ("almaty", "toyota/camry");
+-- cycle_id = UTC-дата (или KOLESA_CYCLE_ID); PK (source_id, feed_key).
+parse_cursor  (source_id, feed_key, last_page, cycle_id, updated_at)
 ```
 
 > **Neon free tier:** ~512 MB хранилища ≈ 3–4 месяца данных при ежедневном парсинге. Чтобы горячая `listings` не упёрлась в лимит, давно-неактивные объявления (is_active=FALSE, last_seen_at >30 дней) еженедельно переносятся в `listings_archive`/`price_history_archive` (`.github/workflows/archive.yml` → `parsers/common/archive_old.py`).
@@ -499,6 +521,7 @@ parser_runs   (id, source_id, shard_index, shard_count, saved, new_count,
 - **Kolesa model validator (`_validate_model`):** парсер отсекает синтетические модели где `model == brand` или `model == год выпуска`. **НЕ отсекает модели-числа** (Audi 80, BMW 525, Mazda 626, Porsche 911, Lada 2107) — это валидные имена. Listing с невалидной моделью сохраняется с `model_id=NULL`.
 - **Deactivate threshold 168h:** объявления помечаются `is_active=FALSE` только если парсер не видел их ≥7 дней. Override через `DEACTIVATE_THRESHOLD_HOURS` env. Слишком маленькое значение (48h ранее) ложно-мертвило живые объявления, которые парсер просто не успел обойти.
 - **Smart-thresholds (тихая деградация):** каждый прогон парсера пишет `saved`/`new_count` в `parser_runs` и сравнивает с последним успешным прогоном той же гранулярности (шарды kolesa — только между собой). Падение более чем на `PARSER_ALERT_DROP_PCT`% (default 50) → один ⚠️-алерт в Telegram и статус `degraded` (baseline не понижается). Ловит поломку селекторов/частичный бан при exit 0 — ровно так молча ломался OLX до фикса 2026-05-02. Всё best-effort: сбой мониторинга прогон не роняет. Нужна миграция `database/migrations/003_parser_runs.sql` (до неё — просто warning в логах).
+- **Kolesa Phase 2 early-stop — реализован, но ВЫКЛЮЧЕН (`KOLESA_EARLY_STOP=0`):** код discovery early-stop по спеке §5.3 (newest-first сортировка фида + остановка после N подряд страниц без новых объявлений + резюмируемый курсор `parse_cursor`) лежит в `parsers/kolesa/early_stop.py` и включается только флагом `KOLESA_EARLY_STOP=1`. **Почему выключен:** по дизайну early-stop передаёт обязанность «жив/продан» liveness-sweep'у (§5.2), а он сейчас заблокирован — kolesa.kz тарпитит detail-GET'ы с IP GitHub Actions (backlog t-0016). Если включить early-stop без работающего liveness, объявления с глубоких страниц перестанут получать бамп `last_seen_at`, и слепой 168h-deactivate массово закроет живые объявления. Порядок включения: применить миграцию `004_parse_cursor.sql` → проверить query-param сортировки на сайте (`KOLESA_SORT_PARAM`, default `sort_by=add_date-desc`) → решить судьбу liveness (t-0016) → только потом `KOLESA_EARLY_STOP=1`.
 - **Alive-check worker:** `parsers/kolesa/alive_check.py` берёт inactive и проверяет их URL напрямую. Работает как компенсация для ситуаций когда объявление активно на сайте, но парсер до него не добрался. Rate-limit: ~2 req/s, kolesa не банит. Запускается каждые 6h + автоматически после успешного `kolesa_full`.
 - **Kolesa атрибуты:** На страницах листинга kolesa.kz возвращает только `brand`, `model`, `avgPrice` в `attributes` — поля `mileage_km`, `engine_volume_cc`, `fuel_type` и т.д. будут `NULL`. Полные данные доступны только на странице конкретного объявления (парсинг детальных страниц не реализован).
 - **Neon Pooler + asyncpg:** Используется `statement_cache_size=0` — обязательно при работе через PgBouncer в transaction-pooling режиме, иначе `InvalidSQLStatementNameError`.

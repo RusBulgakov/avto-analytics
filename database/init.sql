@@ -229,6 +229,25 @@ CREATE INDEX IF NOT EXISTS idx_parser_runs_baseline
     ON parser_runs (source_id, shard_index, shard_count, finished_at DESC);
 
 -- =============================================
+-- КУРСОР DISCOVERY-ПАРСЕРА (миграция 004)
+-- =============================================
+-- Резюмируемый курсор фидов kolesa (t-0017). Пишется/читается
+-- parsers/kolesa/early_stop.py ТОЛЬКО при KOLESA_EARLY_STOP=1 (флаг по
+-- умолчанию выключен — см. предупреждение в early_stop.py). feed_key = slug
+-- фида ("almaty", "toyota/camry", ...); cycle_id = UTC-дата "YYYY-MM-DD"
+-- (или KOLESA_CYCLE_ID); last_page = последняя обработанная страница.
+-- Полные комментарии — database/migrations/004_parse_cursor.sql.
+
+CREATE TABLE IF NOT EXISTS parse_cursor (
+    source_id  INT NOT NULL REFERENCES sources(id),
+    feed_key   TEXT NOT NULL,
+    last_page  INT NOT NULL DEFAULT 0,
+    cycle_id   TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (source_id, feed_key)
+);
+
+-- =============================================
 -- ПОЛЬЗОВАТЕЛИ И ПОДПИСКИ
 -- =============================================
 
