@@ -1,4 +1,3 @@
-from __future__ import annotations
 """
 app/api/v1/endpoints/insights.py
 Pre-computed инсайты для контент-стратегии (/analytics/insights/*).
@@ -19,6 +18,8 @@ Pre-computed инсайты для контент-стратегии (/analytics
    спасает от cache-busting перебором параметров (brand_id — незамкнутое
    пространство ключей), лимитер — спасает.
 """
+from __future__ import annotations
+
 import time
 from typing import Any, Optional
 
