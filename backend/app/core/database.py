@@ -28,6 +28,24 @@ async def init_db():
     _pool = await asyncpg.create_pool(**kwargs)
 
 
+def pool_stats() -> Optional[dict]:
+    """
+    Поверхностная интроспекция пула для /health (t-0015): без запросов к БД,
+    только счётчики соединений. None если пул ещё не инициализирован.
+    Цель — ловить утечки соединений к Neon Pooler (size растёт, idle = 0).
+    """
+    if _pool is None:
+        return None
+    try:
+        return {
+            "size": _pool.get_size(),
+            "idle": _pool.get_idle_size(),
+            "max": _pool.get_max_size(),
+        }
+    except Exception:  # noqa: BLE001 — healthcheck не должен падать из-за метрик
+        return None
+
+
 async def get_conn() -> asyncpg.Connection:
     return await _pool.acquire()
 

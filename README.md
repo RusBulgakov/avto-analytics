@@ -467,7 +467,7 @@ parser_runs   (id, source_id, shard_index, shard_count, saved, new_count,
 | `GET` | `/api/v1/analytics/brands` | Список марок с числом активных объявлений |
 | `GET` | `/api/v1/analytics/models?brand_id=1` | Модели по марке |
 | `GET` | `/api/v1/analytics/cities` | Города с числом объявлений |
-| `GET` | `/health` | Healthcheck |
+| `GET` | `/health` | Healthcheck + метрики asyncpg-пула: `{"status":"ok","service":"automarket-api","pool":{"size":N,"idle":N,"max":N}}` (`pool: null` до инициализации; без запросов к БД) |
 
 ### Auth
 

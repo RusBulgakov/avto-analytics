@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-07-05 — Pool metrics: мониторинг утечек соединений к Neon (t-0015)
+
+### Added
+- **`parsers/common/db.py::pool_stats()`** — снимок метрик asyncpg-пула `{"size", "idle", "max"}` (`get_size()`/`get_idle_size()`/`get_max_size()`); возвращает `None` и никогда не бросает, если пул не инициализирован или интроспекция упала. **`log_pool_stats(prefix)`** — логирует `pool: size=X idle=Y max=Z` через module logger (no-op без пула).
+- **Единая точка end-of-run метрик:** `close_pool()` перед закрытием вызывает `log_pool_stats("close_pool:")` — покрывает все парсеры одним wiring-point'ом, без правок каждого парсера. Признак утечки в логах прогона: `size > idle` в момент закрытия.
+- **`backend/app/core/database.py::pool_stats()`** — та же интроспекция для backend-пула; `GET /health` теперь отдаёт `{"status":"ok","service":"automarket-api","pool":{"size":N,"idle":N,"max":N}}` (`pool: null` до `init_db`). Без запросов к БД — `/health` остаётся дешёвым (он исключён из rate-limiter'а).
+- Тесты: `tests/test_pool_stats.py` (6 шт. — None без исключений на неинициализированном пуле, счётчики на стабе, no-op `close_pool`), `backend/tests/test_health_pool.py` (2 шт. — форма `/health` со стабом `_pool`, без реальной БД).
+
+### Impact
+- Утечки соединений к Neon Pooler теперь видны: в логах каждого прогона парсеров — финальное состояние пула, у backend — живой снимок через `/health`. `statement_cache_size=0` и параметры подключения не тронуты.
+
+---
+
 ## 2026-07-05 — CityNormalizer как модуль + аудит пропущенных брендов (t-0014)
 
 ### Added

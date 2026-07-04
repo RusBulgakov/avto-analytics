@@ -6,13 +6,16 @@ common/db.py
   1. DATABASE_URL (Neon / serverless) — единая строка подключения с SSL
   2. POSTGRES_HOST/USER/PASSWORD/DB (Docker) — обратная совместимость
 """
+import logging
 import os
 import ssl as _ssl
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import AsyncIterator, Optional
 from urllib.parse import urlparse, parse_qs
 
 import asyncpg
+
+logger = logging.getLogger(__name__)
 
 # Единая нормализация городов вынесена в отдельный модуль (t-0014).
 # Кириллица ("Алматы") → latin slug ("almaty"); без этого ~1500 listings
@@ -85,10 +88,43 @@ async def get_pool() -> asyncpg.Pool:
     return _pool
 
 
+def pool_stats() -> Optional[dict]:
+    """
+    Снимок метрик пула для мониторинга утечек соединений к Neon Pooler (t-0015).
+    Возвращает {"size": N, "idle": N, "max": N} или None, если пул
+    не инициализирован. Никогда не бросает исключений.
+    """
+    if _pool is None:
+        return None
+    try:
+        return {
+            "size": _pool.get_size(),
+            "idle": _pool.get_idle_size(),
+            "max": _pool.get_max_size(),
+        }
+    except Exception:  # noqa: BLE001 — метрики не должны ронять прогон
+        return None
+
+
+def log_pool_stats(prefix: str = "") -> None:
+    """Логирует "pool: size=X idle=Y max=Z". No-op если пул не инициализирован."""
+    stats = pool_stats()
+    if stats is None:
+        return
+    label = f"{prefix} " if prefix else ""
+    logger.info(
+        "%spool: size=%d idle=%d max=%d",
+        label, stats["size"], stats["idle"], stats["max"],
+    )
+
+
 async def close_pool() -> None:
-    """Корректно закрывает пул соединений."""
+    """Корректно закрывает пул соединений (перед этим логирует метрики пула)."""
     global _pool
     if _pool is not None:
+        # Единая точка end-of-run метрик для всех парсеров: size > idle здесь
+        # означает не возвращённые в пул соединения (утечка).
+        log_pool_stats("close_pool:")
         await _pool.close()
         _pool = None
 
