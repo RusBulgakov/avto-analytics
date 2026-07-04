@@ -42,6 +42,10 @@ services:
     envVars:
       - key: NEXT_PUBLIC_API_URL
         sync: false
+      # Публичный URL фронта для canonical/OG-тегов и sitemap/robots
+      # (если не задан — fallback https://kolesa-frontend.onrender.com)
+      - key: NEXT_PUBLIC_SITE_URL
+        sync: false
     routes:
       - type: rewrite
         source: /*

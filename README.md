@@ -173,6 +173,10 @@ SECRET_KEY=your_jwt_secret_here
 # Telegram (опционально)
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
+
+# Frontend (SEO): публичный URL сайта для canonical/OG-тегов и sitemap/robots.
+# Если не задан — fallback https://kolesa-frontend.onrender.com
+NEXT_PUBLIC_SITE_URL=https://kolesa-frontend.onrender.com
 ```
 
 ---
@@ -192,7 +196,11 @@ TELEGRAM_CHAT_ID=
 ├── database/
 │   └── init.sql                   # Схема БД + seed данные
 ├── frontend/
+│   ├── public/                    # robots.txt + sitemap.xml — build-артефакты (не в git, создаёт prebuild-скрипт)
+│   ├── scripts/
+│   │   └── gen-sitemap.mjs        # Генерация sitemap.xml/robots.txt из NEXT_PUBLIC_SITE_URL (npm prebuild)
 │   ├── components/
+│   │   ├── Seo.tsx                # SEO-теги страницы: canonical, OG, twitter:card
 │   │   ├── layout/                # Topbar (с live-тикером), FilterBar
 │   │   ├── ui/                    # KPI, Badge, FilterDropdown
 │   │   ├── charts/                # PriceChart, BoxPlot, Heatmap, Funnel,

@@ -1,8 +1,8 @@
 // pages/profitability.tsx — рейтинг моделей по потенциалу маржи перепродажи
 import { useMemo, useState } from 'react';
-import Head from 'next/head';
 import useSWR from 'swr';
 
+import Seo from '@/components/Seo';
 import Topbar from '@/components/layout/Topbar';
 import Badge from '@/components/ui/Badge';
 import { analyticsApi } from '@/lib/api';
@@ -109,9 +109,11 @@ export default function ProfitabilityPage() {
 
     return (
         <>
-            <Head>
-                <title>Рентабельность — Авто Аналитика KZ</title>
-            </Head>
+            <Seo
+                title="Рентабельность перепродажи авто — рейтинг моделей | Авто Аналитика KZ"
+                description="Рейтинг моделей авто по потенциалу маржи перепродажи в Казахстане: цена входа, цена продажи, маржа, скорость продажи и риск."
+                path="/profitability"
+            />
 
             <div className="app">
                 <Topbar />

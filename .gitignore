@@ -48,3 +48,7 @@ test_parsers.py
 
 # Parser backups
 parsers/kolesa/parser_html_backup.py
+
+# Frontend SEO build-артефакты — генерируются frontend/scripts/gen-sitemap.mjs (npm prebuild)
+frontend/public/sitemap.xml
+frontend/public/robots.txt

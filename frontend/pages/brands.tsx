@@ -1,9 +1,9 @@
 // pages/brands.tsx — каталог марок: плитка + поиск + клик → фильтр на дашборде
 import { useMemo, useState } from 'react';
-import Head from 'next/head';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
 
+import Seo from '@/components/Seo';
 import Topbar from '@/components/layout/Topbar';
 import { analyticsApi } from '@/lib/api';
 import { fmt } from '@/lib/format';
@@ -38,9 +38,11 @@ export default function BrandsPage() {
 
     return (
         <>
-            <Head>
-                <title>Марки — Авто Аналитика KZ</title>
-            </Head>
+            <Seo
+                title="Марки авто в Казахстане — каталог и объёмы | Авто Аналитика KZ"
+                description="Каталог марок автомобилей на вторичном рынке Казахстана: число активных объявлений по каждой марке, поиск и переход к аналитике."
+                path="/brands"
+            />
 
             <div className="app">
                 <Topbar />

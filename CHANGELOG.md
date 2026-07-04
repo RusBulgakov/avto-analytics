@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-07-05 — SEO-фундамент: robots.txt + sitemap.xml + canonical/OG meta (t-0002)
+
+### Added
+- **`frontend/scripts/gen-sitemap.mjs`** — генератор `public/robots.txt` + `public/sitemap.xml`, подключён через npm `prebuild` (совместимо с `output: 'export'` — файлы попадают в `out/` как статика). Базовый URL из env `NEXT_PUBLIC_SITE_URL`. Оба файла — build-артефакты: в git не коммитятся (добавлены в `.gitignore`), генерируются при каждом билде (локально и на Render). До этого папки `public/` не было вообще — сайт был не готов к индексации.
+- **robots.txt** (генерируемый): `Allow: /`, `Disallow: /auth/`, ссылка на `Sitemap`.
+- **sitemap.xml** (генерируемый): 4 индексируемые страницы — `/`, `/brands`, `/profitability`, `/forecast`; без `<lastmod>` (опционален по спецификации, а «дата билда» была бы враньём). `/listing` и `/model` не включены (query-string детальные страницы), `/auth/*` исключён. `/articles` добавится в t-0008 (одна строка в `ROUTES`).
+- **`frontend/components/Seo.tsx`** — ручной `next/head` без новых зависимостей: `<title>`, description, canonical, `og:title/description/url/site_name/locale/type`, `twitter:card`. `og:image` опционален (картинки пока нет). Подключён на `/`, `/brands`, `/profitability`, `/forecast` с русскими title/description.
+- **env `NEXT_PUBLIC_SITE_URL`** — публичный URL фронта (добавлен в `.env.example`, `render.yaml`, README). Fallback в коде — `https://kolesa-frontend.onrender.com` (дефолтный домен Render static-сайта `kolesa-frontend`; реальный прод-домен в репо нигде не зафиксирован — при появлении кастомного домена задать env в Render).
+
+### Changed
+- Страницы `/brands`, `/profitability`, `/forecast` получили содержательные title/description вместо голого `<title>`.
+
+### Impact
+- Фронт готов к индексации поисковиками — фундамент для контент-стратегии (BACKLOG §Контент-маркетинг, t-0008). `npm run build` проходит, `out/` содержит сгенерированные robots.txt и sitemap.xml, на всех основных страницах в `<head>` есть canonical и og:*.
+
+---
+
 ## 2026-06-04 — Kolesa liveness sweep: детектор «продано» + полный охват (Phase 1)
 
 ### Added
