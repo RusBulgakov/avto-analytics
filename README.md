@@ -170,6 +170,15 @@ ARCHIVE_BATCH          — размер пачки за транзакцию (de
 ARCHIVE_DRY_RUN        — '1' (default, безопасно): только печать плана; '0' — перенос
 ```
 
+### Smart-thresholds (env parsers/common/run_stats.py — алерт при тихой деградации)
+
+```
+PARSER_ALERT_DROP_PCT  — порог падения saved/new_count vs прошлый успешный прогон,
+                         в процентах (default 50: алерт если текущее < 50% прошлого)
+PARSER_ALERT_MIN_BASE  — шумовой порог (default 100): baseline-метрика ниже этого
+                         значения не сравнивается — мелкие фиды не алертят ложно
+```
+
 ### Локально (.env)
 
 ```env
@@ -221,7 +230,7 @@ NEXT_PUBLIC_SITE_URL=https://kolesa-frontend.onrender.com
 │       └── core/                  # config, database, security, rate_limit
 ├── database/
 │   ├── init.sql                   # Схема БД + seed данные
-│   └── migrations/                # 001 liveness last_checked_at, 002 listings_archive
+│   └── migrations/                # 001 liveness last_checked_at, 002 listings_archive, 003 parser_runs
 ├── frontend/
 │   ├── public/                    # robots.txt + sitemap.xml — build-артефакты (не в git, создаёт prebuild-скрипт)
 │   ├── scripts/
@@ -377,6 +386,13 @@ users / subscription_plans / user_subscriptions             — пользова
 -- еженедельным workflow archive.yml (без FK на горячие таблицы)
 listings_archive      (те же колонки, что listings, + archived_at)
 price_history_archive (те же колонки, что price_history, + archived_at)
+
+-- Мониторинг парсеров (миграция 003): метрики каждого прогона для детекции
+-- «тихой деградации» (parsers/common/run_stats.py). Гранулярность
+-- (source_id, shard_index, shard_count) — шарды kolesa сравниваются только
+-- между собой. status='degraded' — прогон упал ниже порога и baseline не понижает.
+parser_runs   (id, source_id, shard_index, shard_count, saved, new_count,
+               active_after, status 'ok'|'degraded', finished_at)
 ```
 
 > **Neon free tier:** ~512 MB хранилища ≈ 3–4 месяца данных при ежедневном парсинге. Чтобы горячая `listings` не упёрлась в лимит, давно-неактивные объявления (is_active=FALSE, last_seen_at >30 дней) еженедельно переносятся в `listings_archive`/`price_history_archive` (`.github/workflows/archive.yml` → `parsers/common/archive_old.py`).
@@ -467,6 +483,7 @@ price_history_archive (те же колонки, что price_history, + archive
 - **Kolesa structured exit codes:** парсер возвращает `0`/`1`/`2`/`10` в зависимости от исхода. Workflow gate'ит `deactivate-old` через `if: success()` → при `IPBlockedError` или partial-успехе deactivate **не запускается**, сохраняем существующие данные. Без этого 1 неудачный прогон стирал 11k+ живых объявлений (произошло 2026-04-23).
 - **Kolesa model validator (`_validate_model`):** парсер отсекает синтетические модели где `model == brand` или `model == год выпуска`. **НЕ отсекает модели-числа** (Audi 80, BMW 525, Mazda 626, Porsche 911, Lada 2107) — это валидные имена. Listing с невалидной моделью сохраняется с `model_id=NULL`.
 - **Deactivate threshold 168h:** объявления помечаются `is_active=FALSE` только если парсер не видел их ≥7 дней. Override через `DEACTIVATE_THRESHOLD_HOURS` env. Слишком маленькое значение (48h ранее) ложно-мертвило живые объявления, которые парсер просто не успел обойти.
+- **Smart-thresholds (тихая деградация):** каждый прогон парсера пишет `saved`/`new_count` в `parser_runs` и сравнивает с последним успешным прогоном той же гранулярности (шарды kolesa — только между собой). Падение более чем на `PARSER_ALERT_DROP_PCT`% (default 50) → один ⚠️-алерт в Telegram и статус `degraded` (baseline не понижается). Ловит поломку селекторов/частичный бан при exit 0 — ровно так молча ломался OLX до фикса 2026-05-02. Всё best-effort: сбой мониторинга прогон не роняет. Нужна миграция `database/migrations/003_parser_runs.sql` (до неё — просто warning в логах).
 - **Alive-check worker:** `parsers/kolesa/alive_check.py` берёт inactive и проверяет их URL напрямую. Работает как компенсация для ситуаций когда объявление активно на сайте, но парсер до него не добрался. Rate-limit: ~2 req/s, kolesa не банит. Запускается каждые 6h + автоматически после успешного `kolesa_full`.
 - **Kolesa атрибуты:** На страницах листинга kolesa.kz возвращает только `brand`, `model`, `avgPrice` в `attributes` — поля `mileage_km`, `engine_volume_cc`, `fuel_type` и т.д. будут `NULL`. Полные данные доступны только на странице конкретного объявления (парсинг детальных страниц не реализован).
 - **Neon Pooler + asyncpg:** Используется `statement_cache_size=0` — обязательно при работе через PgBouncer в transaction-pooling режиме, иначе `InvalidSQLStatementNameError`.

@@ -4,6 +4,24 @@
 
 ---
 
+## 2026-07-05 — Smart-thresholds: алерт при тихой деградации парсера (t-0009)
+
+### Added
+- **`parsers/common/run_stats.py`** — детектор «тихой деградации»: после каждого прогона метрики (`saved`, `new_count`) пишутся в новую таблицу `parser_runs` и сравниваются с последним **успешным** прогоном той же гранулярности `(source_id, shard_index, shard_count)` — шардовые прогоны kolesa (3 шарда) сравниваются только с таким же шардом, а не с полным прогоном. Падение любой метрики больше чем на `PARSER_ALERT_DROP_PCT`% (env, default 50) → **один** ⚠️-алерт в Telegram через существующий `notifier.send_telegram_message` и запись прогона со `status='degraded'` (деградировавший прогон baseline НЕ понижает — следующее сравнение снова идёт с последним «хорошим»). Baseline ниже шумового порога `PARSER_ALERT_MIN_BASE` (env, default 100) не сравнивается — мелкие фиды не алертят ложно. Решающая функция `evaluate_degradation()` чистая (без БД/сети) и покрыта юнит-тестами.
+- **`database/migrations/003_parser_runs.sql`** (+ зеркало в `database/init.sql`) — таблица `parser_runs(id, source_id FK→sources, shard_index, shard_count, saved, new_count, active_after NULL, status ok|degraded, finished_at)` + индекс под выборку baseline. Применить вручную в Neon SQL Editor; до применения мониторинг молча пропускается (warning в логах), прогоны не страдают.
+- **`tests/test_run_stats.py`** — 12 юнит-тестов `evaluate_degradation`: падение ниже порога → алерт; нормальный прогон/рост → молчание; нет baseline → молчание; baseline ниже шумового порога → молчание; prev=0 без ZeroDivisionError; обе метрики в одном алерте; кастомный порог.
+
+### Changed
+- **`parsers/kolesa/parser.py`** — в `__main__` после прогона (кроме ip_blocked — прерванные прогоны не записываются, о них уже сигналят exit 1 и 🔴) вызывается `record_and_alert("kolesa", total, total_new, shard_index=…, shard_count=…)`. Partial-прогоны (exit 10) записываются как обычные: их статус определяет только сравнение с baseline — partial с просадкой меньше порога станет новым baseline.
+- **`parsers/{mycar,olx,newauto,avtorynok}/parser.py`** — по одной строке в `__main__` после `send_success`: `record_and_alert(<source>, total, total_new)`.
+
+### Impact
+- Тихая поломка селекторов или частичный бан при exit 0 (ровно так молча ломался OLX до фикса 2026-05-02) теперь ловится в первый же прогон: «⚠️ Деградация парсера kolesa[1/3]: saved 1,200 vs 5,400 (-78%) в прошлом успешном прогоне (порог 50%)».
+- Мониторинг полностью best-effort: любой его сбой (нет таблицы, нет сети, нет Telegram-кредов) — warning в лог, exit code и данные прогона не затрагиваются.
+- Новые env: `PARSER_ALERT_DROP_PCT` (default 50), `PARSER_ALERT_MIN_BASE` (default 100) — менять в workflow env при необходимости, секретов не требуют.
+
+---
+
 ## 2026-07-05 — Раздел /articles: SEO-блог на markdown со статическим экспортом (t-0008)
 
 ### Added

@@ -924,6 +924,20 @@ if __name__ == "__main__":
         asyncio.run(send_error(source_tag, e))
         sys.exit(2)
 
+    # ── Smart-thresholds: запись метрик прогона + алерт при тихой деградации ──
+    # ip_blocked-прогоны не записываем: они прерваны на середине, сравнивать
+    # их не с чем, и об IP-блоке уже сигналят exit 1 и 🔴 в Telegram.
+    # Partial-прогоны (exit 10) записываются как обычные: status определяет
+    # только сравнение с baseline (PARSER_ALERT_DROP_PCT); partial с просадкой
+    # меньше порога запишется как 'ok' и станет новым baseline.
+    # record_and_alert best-effort — прогон не уронит.
+    if not ip_blocked:
+        from parsers.common.run_stats import record_and_alert
+        asyncio.run(record_and_alert(
+            "kolesa", total, total_new,
+            shard_index=_shard_index, shard_count=_shard_count,
+        ))
+
     # ── Анализ результата ──
     if ip_blocked:
         logger.error("Парсер прерван по IP-блоку. Exit 1 → deactivate отменён.")

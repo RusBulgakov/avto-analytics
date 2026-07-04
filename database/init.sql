@@ -203,6 +203,32 @@ CREATE INDEX IF NOT EXISTS idx_price_history_archive_listing
     ON price_history_archive (listing_id);
 
 -- =============================================
+-- МОНИТОРИНГ ПАРСЕРОВ (миграция 003)
+-- =============================================
+-- История метрик прогонов для детекции «тихой деградации» (exit 0, но
+-- saved/new упали ниже порога PARSER_ALERT_DROP_PCT). Пишется и читается
+-- parsers/common/run_stats.py. Гранулярность (source_id, shard_index,
+-- shard_count): шардовые прогоны kolesa сравниваются только между собой.
+-- status: 'ok' — baseline для следующих сравнений; 'degraded' — упавший
+-- прогон (записывается, но baseline не понижает). Полные комментарии —
+-- database/migrations/003_parser_runs.sql.
+
+CREATE TABLE IF NOT EXISTS parser_runs (
+    id           BIGSERIAL PRIMARY KEY,
+    source_id    INT NOT NULL REFERENCES sources(id),
+    shard_index  INT NOT NULL DEFAULT 0,
+    shard_count  INT NOT NULL DEFAULT 1,
+    saved        INT NOT NULL,
+    new_count    INT NOT NULL,
+    active_after INT,
+    status       TEXT NOT NULL DEFAULT 'ok' CHECK (status IN ('ok', 'degraded')),
+    finished_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_parser_runs_baseline
+    ON parser_runs (source_id, shard_index, shard_count, finished_at DESC);
+
+-- =============================================
 -- ПОЛЬЗОВАТЕЛИ И ПОДПИСКИ
 -- =============================================
 
