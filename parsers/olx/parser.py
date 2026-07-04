@@ -223,6 +223,10 @@ def _parse_card(card) -> Optional[dict]:
             # Fallback на старую позиционную схему (если разметку снова сменят)
             non_price = [t for t in p_texts if "тг" not in t.lower()]
             title_text = non_price[0] if non_price else ""
+        # В некоторых вариантах разметки (SSR для ботов) цена приклеена к
+        # title без пробела: «Продается ваз 2110500 000 тг.Договорная».
+        # Срезаем ценовой хвост — иначе он утекает в model.
+        title_text = re.sub(r"\s*\d[\d\s]*тг\.?.*$", "", title_text, flags=re.IGNORECASE).strip()
 
         # Brand/model через нормализацию: title-ы хаотичны (Cyrillic/Latin/typos/префиксы).
         brand_slug, model_text = _extract_brand_and_model(title_text)
