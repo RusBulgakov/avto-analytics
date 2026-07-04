@@ -43,11 +43,8 @@ function capitalize(s: string): string {
 }
 
 function cityLabel(slug: string): string {
-    // DB stores slugs like `ust-kamenogorsk`; split on `-`, capitalize each.
-    return slug
-        .split('-')
-        .map(capitalize)
-        .join('-');
+    // Русское имя для известных слагов («almaty» → «Алматы»), иначе капитализация.
+    return fmt.cityName(slug);
 }
 
 /* ─── Brand/Model/City list items from backend ─── */
@@ -218,9 +215,12 @@ function RangeDropdown({
 /* ────────────────────── Main component ────────────────────── */
 
 export default function FilterBar({ filters, onChange }: Props) {
-    // Tick "обновлено" every minute
-    const [now, setNow] = useState<Date>(new Date());
+    // Tick "обновлено" every minute.
+    // Стартуем с null и заполняем в useEffect: время, запечённое в static-HTML
+    // на билде, не совпадает с клиентским → React hydration error #425.
+    const [now, setNow] = useState<Date | null>(null);
     useEffect(() => {
+        setNow(new Date());
         const i = setInterval(() => setNow(new Date()), 60_000);
         return () => clearInterval(i);
     }, []);
@@ -520,7 +520,7 @@ export default function FilterBar({ filters, onChange }: Props) {
                 className="uppercase dim"
                 style={{ fontFamily: 'var(--mono)', marginLeft: 'auto' }}
             >
-                обновлено {fmt.hhmm(now)}
+                {now ? `обновлено ${fmt.hhmm(now)}` : ' '}
             </span>
 
             <FilterDropdown

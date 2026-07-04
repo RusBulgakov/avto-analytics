@@ -25,16 +25,22 @@ export default function BrandsPage() {
         { revalidateOnFocus: false }
     );
 
-    const filtered = useMemo(() => {
-        const list = brands ?? [];
-        const qq = q.trim().toLowerCase();
-        if (!qq) return list;
-        return list.filter(b =>
-            b.name.toLowerCase().includes(qq) || b.slug.toLowerCase().includes(qq)
-        );
-    }, [brands, q]);
+    // Марки без активных объявлений не показываем — в БД десятки мусорных
+    // брендов-опечаток с нулём объявлений, они только шумят в каталоге.
+    const visible = useMemo(
+        () => (brands ?? []).filter(b => b.listings_count > 0),
+        [brands]
+    );
 
-    const total = brands?.reduce((s, b) => s + b.listings_count, 0) ?? 0;
+    const filtered = useMemo(() => {
+        const qq = q.trim().toLowerCase();
+        if (!qq) return visible;
+        return visible.filter(b =>
+            b.name.toLowerCase().includes(qq) || (b.slug ?? '').toLowerCase().includes(qq)
+        );
+    }, [visible, q]);
+
+    const total = visible.reduce((s, b) => s + b.listings_count, 0);
 
     return (
         <>
@@ -52,7 +58,7 @@ export default function BrandsPage() {
                             <div className="page-sub">
                                 {isLoading
                                     ? 'загрузка…'
-                                    : `${fmt.int(brands?.length ?? 0)} марок · ${fmt.int(total)} активных объявлений`}
+                                    : `${fmt.int(visible.length)} ${fmt.plural(visible.length, ['марка', 'марки', 'марок'])} · ${fmt.int(total)} активных объявлений`}
                             </div>
                         </div>
                         <input
@@ -103,7 +109,7 @@ export default function BrandsPage() {
                                             color: 'var(--text)',
                                         }}
                                     >
-                                        {b.name}
+                                        {fmt.brandName(b.name)}
                                     </div>
                                     <div
                                         className="mono dim"

@@ -47,6 +47,7 @@ export interface PricePoint {
 
 export interface BrandOverview {
     brand: string;
+    slug?: string | null;
     active_listings: number;
     avg_price_kzt: number;
     min_price_kzt: number;

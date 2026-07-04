@@ -1,7 +1,6 @@
 // components/ui/KPI.tsx — single KPI tile (used in kpi-grid container)
 import React from 'react';
 import Sparkline from './Sparkline';
-import { fmt } from '@/lib/format';
 
 interface Props {
     label: string;
@@ -43,7 +42,8 @@ export default function KPI({
             {hasDelta && (
                 <div className={`kpi-delta ${good ? 'up' : 'down'}`}>
                     <span className="kpi-arrow">{isUp ? '▲' : '▼'}</span>
-                    {fmt.pct(Math.abs(delta as number))}
+                    {/* Знак задаёт стрелка — число без знака, иначе выходило «▼ +0.5%» */}
+                    {Math.abs(delta as number).toFixed(1)}%
                     <span className="dim" style={{ marginLeft: 4 }}>{deltaCaption}</span>
                 </div>
             )}

@@ -109,12 +109,21 @@ BRAND_LOOKUP = {
     'ваз': 'vaz', 'лада': 'vaz', 'жигули': 'vaz',
     'газ': 'gaz', 'уаз': 'uaz', 'москвич': 'moskvich',
     'шкода': 'skoda', 'сеат': 'seat',
+    # Народные названия моделей, по которым однозначно ясна марка
+    'нива': 'vaz', 'волга': 'gaz', 'газель': 'gaz', 'приора': 'vaz',
+    'гранта': 'vaz', 'веста': 'vaz', 'ларгус': 'vaz', 'камри': 'toyota',
+    'королла': 'toyota', 'прадо': 'toyota', 'аккорд': 'honda',
+    'соната': 'hyundai', 'элантра': 'hyundai', 'акцент': 'hyundai',
+    'нексия': 'daewoo', 'матиз': 'daewoo', 'пассат': 'volkswagen',
+    'гольф': 'volkswagen', 'поло': 'volkswagen',
 }
 
 # Префиксы которые юзеры ставят перед маркой — игнорируем при матчинге
 JUNK_PREFIXES = {
     'продам', 'продаю', 'продается', 'продается', 'срочно', 'обмен',
     'торг', 'куплю', 'продается:', 'продается!', 'продаётся',
+    'обменяю', 'или', 'сатылады', 'сатамын', 'автомобиль', 'машина',
+    'авто', 'машину',
 }
 
 
@@ -192,13 +201,28 @@ def _parse_card(card) -> Optional[dict]:
         id_match = re.search(r"ID([A-Za-z0-9]+)", url)
         external_id = id_match.group(1) if id_match else (card.get("id") or None)
 
-        # OLX пишет данные карточки в 3 фиксированных <p> тега (с 2025-04).
-        # Старые селекторы h6/h4/[data-cy='ad-card-title'] больше не работают —
-        # это причина 85% missing brand_id и 6% empty titles в БД.
+        # Разметка OLX 2026-07: title вернулся в <h4>, а первым <p> идёт ЦЕНА
+        # («990 000 тг.Договорная»). Позиционный ps[0]=title писал цену в
+        # title → 97% OLX-объявлений оставались без марки/модели.
+        # Классифицируем <p> по содержимому, title берём из заголовка.
+        title_el = card.select_one("h4, h6, [data-cy='ad-card-title']")
         ps = card.find_all("p")
-        title_text = ps[0].get_text(strip=True) if len(ps) >= 1 else ""
-        loc_text = ps[1].get_text(strip=True) if len(ps) >= 2 else ""
-        year_mileage_text = ps[2].get_text(strip=True) if len(ps) >= 3 else ""
+        p_texts = [p.get_text(strip=True) for p in ps]
+        title_text = title_el.get_text(strip=True) if title_el else ""
+        loc_text = ""
+        year_mileage_text = ""
+        for t in p_texts:
+            low = t.lower()
+            if "тг" in low:            # цена — пропускаем
+                continue
+            if "км" in low and re.search(r"\d", t):
+                year_mileage_text = year_mileage_text or t
+            elif " - " in t:
+                loc_text = loc_text or t
+        if not title_text:
+            # Fallback на старую позиционную схему (если разметку снова сменят)
+            non_price = [t for t in p_texts if "тг" not in t.lower()]
+            title_text = non_price[0] if non_price else ""
 
         # Brand/model через нормализацию: title-ы хаотичны (Cyrillic/Latin/typos/префиксы).
         brand_slug, model_text = _extract_brand_and_model(title_text)

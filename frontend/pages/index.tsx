@@ -1,6 +1,7 @@
 // pages/index.tsx — Dashboard (trading terminal redesign, steps 1–6)
 import { useState } from 'react';
 import Head from 'next/head';
+import Link from 'next/link';
 import useSWR from 'swr';
 
 import Topbar from '@/components/layout/Topbar';
@@ -122,6 +123,7 @@ export default function Dashboard() {
 
     const recentParams: Record<string, unknown> = { limit: 10 };
     if (singleBrand != null) recentParams.brand_id = singleBrand;
+    if (filters.model_id.length === 1) recentParams.model_id = filters.model_id[0];
     if (filters.city.length) recentParams.city = filters.city;
     if (filters.source.length) recentParams.source = filters.source;
 
@@ -132,6 +134,15 @@ export default function Dashboard() {
     );
 
     const selectedBrandId = filters.brand_id.length === 1 ? filters.brand_id[0] : null;
+    // Слаг выбранной марки — для ссылок на /model из топ-таблицы моделей
+    const { data: allBrands } = useSWR<{ id: number; name: string; slug: string | null; listings_count: number }[]>(
+        'brands',
+        () => analyticsApi.getBrands(),
+        { revalidateOnFocus: false }
+    );
+    const selectedBrandSlug = selectedBrandId != null
+        ? (allBrands?.find(b => b.id === selectedBrandId)?.slug ?? null)
+        : null;
     const boxplotParams = {
         city: filters.city.length ? filters.city : undefined,
         source: filters.source.length ? filters.source : undefined,
@@ -144,9 +155,12 @@ export default function Dashboard() {
         { keepPreviousData: true }
     );
 
-    const geoParams = filters.include_inactive ? { include_inactive: true } : undefined;
+    const geoParams: Record<string, unknown> = {};
+    if (filters.include_inactive) geoParams.include_inactive = true;
+    if (filters.brand_id.length) geoParams.brand_id = filters.brand_id;
+    if (filters.model_id.length) geoParams.model_id = filters.model_id;
     const { data: geo, isLoading: geoLoading } = useSWR(
-        ['geo', filters.include_inactive],
+        ['geo', geoParams],
         () => analyticsApi.getGeo(geoParams),
         { keepPreviousData: true, refreshInterval: 300_000 }
     );
@@ -191,7 +205,7 @@ export default function Dashboard() {
                             foot={<span>средняя по активным объявлениям</span>}
                         />
                         <KPI
-                            label="Активные объявления"
+                            label={filters.include_inactive ? 'Все объявления' : 'Активные объявления'}
                             value={
                                 summaryLoading && totalListings == null
                                     ? '…'
@@ -315,7 +329,7 @@ export default function Dashboard() {
                                 <div>
                                     <div className="card-title">География KZ</div>
                                     <div className="card-sub">
-                                        активных объявлений по городам · клик → фильтр
+                                        {filters.include_inactive ? 'все объявления' : 'активные объявления'} по городам · клик → фильтр
                                     </div>
                                 </div>
                             </div>
@@ -439,7 +453,18 @@ export default function Dashboard() {
                                         {(overview ?? []).slice(0, 10).map((b, i) => (
                                             <tr key={b.brand}>
                                                 <td><span className="rank">{i + 1}</span></td>
-                                                <td><strong>{b.brand}</strong></td>
+                                                <td>
+                                                    {selectedBrandId && selectedBrandSlug && b.slug ? (
+                                                        <Link
+                                                            href={{ pathname: '/model', query: { brand: selectedBrandSlug, model: b.slug } }}
+                                                            style={{ color: 'inherit' }}
+                                                        >
+                                                            <strong>{b.brand}</strong>
+                                                        </Link>
+                                                    ) : (
+                                                        <strong>{selectedBrandId ? b.brand : fmt.brandName(b.brand)}</strong>
+                                                    )}
+                                                </td>
                                                 <td className="num">{fmt.int(b.active_listings)}</td>
                                                 <td className="num">{fmt.price(b.avg_price_kzt)}</td>
                                                 <td className="num dim">

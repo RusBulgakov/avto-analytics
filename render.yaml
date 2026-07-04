@@ -42,7 +42,7 @@ services:
     envVars:
       - key: NEXT_PUBLIC_API_URL
         sync: false
-    routes:
-      - type: rewrite
-        source: /*
-        destination: /index.html
+    # ВАЖНО: catch-all rewrite /* → /index.html ломал deep-links — Render отдавал
+    # дашборд для ЛЮБОГО пути (/brands, /listing?id=, /auth/login и т.д.).
+    # Next.js static export кладёт в out/ отдельные .html на каждую страницу,
+    # Render Static сам отдаёт brands.html для /brands. Rewrite не нужен.
