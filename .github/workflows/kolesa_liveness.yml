@@ -18,6 +18,14 @@ on:
         description: 'Бюджет времени на прогон, мин'
         required: false
         default: '300'
+      req_timeout:
+        description: 'HTTP-таймаут на запрос, сек'
+        required: false
+        default: '8'
+      max_tries:
+        description: 'Попыток на объявление (1 = без retry)'
+        required: false
+        default: '2'
 
 concurrency:
   group: kolesa-liveness
@@ -46,6 +54,8 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           LIVENESS_DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
           LIVENESS_TIME_BUDGET_MIN: ${{ github.event.inputs.time_budget_min || '300' }}
+          LIVENESS_REQ_TIMEOUT: ${{ github.event.inputs.req_timeout || '8' }}
+          LIVENESS_MAX_TRIES: ${{ github.event.inputs.max_tries || '2' }}
           LIVENESS_BATCH: '500'
           LIVENESS_CONCURRENCY: '2'
           LIVENESS_DELAY_MIN: '1.2'
