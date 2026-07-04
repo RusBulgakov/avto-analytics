@@ -189,7 +189,10 @@ SECRET_KEY=your_jwt_secret_here
 # Rate limiting (опционально, defaults в скобках; формат "N/second|minute|hour|day")
 RATE_LIMIT_ENABLED=true       # (true) выключатель лимитера
 RATE_LIMIT_GLOBAL=120/minute  # (120/minute) per-IP лимит на все /api/*
-RATE_LIMIT_HEAVY=20/minute    # (20/minute) per-IP лимит на profit-ranking/profitability/backtest/forecast
+RATE_LIMIT_HEAVY=20/minute    # (20/minute) per-IP лимит на profit-ranking/profitability/backtest/forecast/insights/*
+
+# Insights (опционально)
+INSIGHTS_CACHE_TTL_SEC=3600   # (3600) TTL in-memory кеша /api/v1/analytics/insights/*
 
 # Telegram (опционально)
 TELEGRAM_BOT_TOKEN=
@@ -214,7 +217,7 @@ NEXT_PUBLIC_SITE_URL=https://kolesa-frontend.onrender.com
 │   └── archive.yml                # Холодная архивация inactive >30d — раз в неделю (dry-run по умолчанию)
 ├── backend/
 │   └── app/
-│       ├── api/v1/endpoints/      # analytics.py (все /api/v1/analytics/*), auth.py
+│       ├── api/v1/endpoints/      # analytics.py (/api/v1/analytics/*), insights.py (/api/v1/analytics/insights/*), auth.py
 │       └── core/                  # config, database, security, rate_limit
 ├── database/
 │   ├── init.sql                   # Схема БД + seed данные
@@ -384,7 +387,7 @@ price_history_archive (те же колонки, что price_history, + archive
 Все `/api/*` эндпоинты защищены per-IP лимитером (in-memory fixed window, `backend/app/core/rate_limit.py`):
 
 - **Глобальный лимит:** `120/minute` на IP (env `RATE_LIMIT_GLOBAL`).
-- **Тяжёлые эндпоинты** — `/profit-ranking`, `/profitability`, `/backtest`, `/forecast`: строже, `20/minute` (env `RATE_LIMIT_HEAVY`); их запросы также считаются в глобальном лимите.
+- **Тяжёлые эндпоинты** — `/profit-ranking`, `/profitability`, `/backtest`, `/forecast` и все `/analytics/insights/*`: строже, `20/minute` (env `RATE_LIMIT_HEAVY`); их запросы также считаются в глобальном лимите. Insights кешируются на 1ч, но кеш обходится перебором query-параметров — поэтому лимит на них всё равно нужен.
 - **Исключены:** `/health`, `/api/docs`, `/api/redoc`, `/openapi.json`, CORS preflight (OPTIONS).
 - При превышении — `429` с JSON-телом и заголовком `Retry-After` (секунды до сброса окна).
 - Выключатель: `RATE_LIMIT_ENABLED=false`. Клиентский IP берётся из `X-Forwarded-For` (leftmost, за прокси Render), fallback — peer address.
@@ -412,6 +415,17 @@ price_history_archive (те же колонки, что price_history, + archive
 | `GET` | `/api/v1/analytics/forecast` | Прогноз медианной цены V2: OLS на двух осях (KZT + USD-нормализованной), with FX-вклад. Params: `brand_id` (обяз.), `model_id?`, `year?`, `year_from?`, `year_to?`, `history_days=90`, `horizon_days=30`. Returns `{historical, forecast, trend_pct_per_month_kzt, trend_pct_per_month_usd, fx_impact_pct, r2_kzt, r2_usd, current_fx_rate, sample_size}`. |
 | `GET` | `/api/v1/analytics/backtest` | Ретро-тест стратегии "купить дешевле p25 группы, продать в течение N дней". Params: `brand_id?`, `model_id?`, `year_from?`, `year_to?`, `period_days=60`, `discount_threshold=0.15`, `hold_days=45`. Returns `{total_signals, hits, win_rate, avg_realized_margin, median_days_to_sell, top_winners[]}`. |
 
+### Инсайты для статей (pre-computed, кеш 1ч)
+
+Готовые агрегаты под контент: статьи пуллят цифры отсюда вместо хардкода. Все ответы содержат `meta.method` с описанием методики. Кеш — in-memory TTL (env `INSIGHTS_CACHE_TTL_SEC`, default 3600 сек), сбрасывается при рестарте бэка. Входят в heavy-класс rate-limit'а (`20/minute`).
+
+| Метод | Путь | Описание |
+|-------|------|----------|
+| `GET` | `/api/v1/analytics/insights/price-drop-leaders` | Топ моделей по падению медианной цены. Params: `period_days=90\|180\|365`, `limit=10` (1–50), `min_samples=20` (5–200, минимум объявлений в каждом окне). Сравнивает медиану 14-дневного окна начала периода с последними 14 днями; возвращает только реально подешевевшие. Returns `{meta, leaders[{brand, model, model_id, median_then_kzt, median_now_kzt, drop_pct, sample_then, sample_now}]}`. |
+| `GET` | `/api/v1/analytics/insights/seasonality` | Средняя/медианная цена по календарным месяцам за всю историю + сезоны (взвешенно по наблюдениям). Params: `brand_id?`. Returns `{meta, months[{month, avg_price_kzt, median_price_kzt, observations, listings}], seasons[{season, months, avg_price_kzt, observations}]}`. |
+| `GET` | `/api/v1/analytics/insights/brand-volatility` | Волатильность цены по брендам: coefficient of variation (stddev/mean, %) месячных медиан. Params: `period_days=365` (90–730), `min_months=3`, `min_listings_per_month=30`, `limit=20`, `order=stable\|volatile`. Ниже `volatility_pct` = бренд стабильнее держит цену. Returns `{meta, brands[{brand, brand_id, months, avg_monthly_median_kzt, stddev_kzt, volatility_pct}]}`. |
+| `GET` | `/api/v1/analytics/insights/price-buckets` | Гистограмма текущих цен активных объявлений по корзинам. Params: `bucket_size_kzt=2000000`, `max_price_kzt=20000000` (всё дороже — в overflow-корзину `to_kzt=null`; 2–40 корзин). Returns `{meta, buckets[{from_kzt, to_kzt, count, share_pct}]}`. |
+
 ### Аналитика — детали объявления
 
 | Метод | Путь | Описание |
@@ -420,7 +434,7 @@ price_history_archive (те же колонки, что price_history, + archive
 | `GET` | `/api/v1/analytics/valuation?listing_id=...` | Fair-price оценка (p25/median/p75 похожих) |
 | `GET` | `/api/v1/analytics/similar?listing_id=...&limit=8` | Похожие объявления |
 
-Все аналитические endpoint'ы поддерживают фильтры: `brand_id[]`, `model_id[]`, `city[]`, `source[]`, `period_days`.
+Все аналитические endpoint'ы (кроме `/analytics/insights/*` — у них свои параметры, см. выше) поддерживают фильтры: `brand_id[]`, `model_id[]`, `city[]`, `source[]`, `period_days`.
 
 **`include_inactive: bool`** (default `false`) — поддерживается endpoint'ами `/brands`, `/models`, `/summary`, `/market-overview`, `/price-history`, `/price-boxplot`, `/heatmap`, `/cities`, `/geo`. Управляется toggle "Активные / Все" в FilterBar. По умолчанию возвращаются только `is_active=TRUE` объявления; при `true` — вся история. `/recent`, `/liquidity`, `/profit-ranking`, `/listing/{id}`, `/valuation`, `/similar` намеренно не реагируют (см. CHANGELOG).
 

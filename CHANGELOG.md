@@ -4,6 +4,29 @@
 
 ---
 
+## 2026-07-05 — Insights API: pre-computed агрегаты для статей (t-0007)
+
+### Added
+- **`backend/app/api/v1/endpoints/insights.py`** — новая группа публичных эндпоинтов `/api/v1/analytics/insights/*` (отдельный модуль, чтобы не раздувать analytics.py — тот уже 2000+ строк):
+  - `price-drop-leaders` — топ моделей по падению медианной цены за `period_days` (90|180|365). Метод: медиана `price_kzt` в 14-дневном окне начала периода vs последние 14 дней, JOIN brands+models, порог `min_samples` (default 20) объявлений в каждом окне против шума малых выборок. Возвращает только реально подешевевшие модели.
+  - `seasonality` — avg + median цены по календарным месяцам за всю историю `price_history` (глобально или `brand_id`), плюс сезонная агрегация (winter/spring/summer/autumn, взвешенно по числу наблюдений).
+  - `brand-volatility` — метрика «кто держит цену»: coefficient of variation (sample stddev / mean, %) МЕСЯЧНЫХ МЕДИАН цены бренда за период. Медиана гасит выбросы, CV нормирует на уровень цен (Toyota сравнима с Lada). Месяцы с < `min_listings_per_month` объявлений исключаются. `order=stable|volatile`.
+  - `price-buckets` — гистограмма ТЕКУЩИХ цен активных объявлений (latest-price CTE как в `/summary`) по корзинам `bucket_size_kzt` (default 2 млн) с overflow-корзиной выше `max_price_kzt` (default 20 млн); counts + share_pct.
+  - Все ответы несут `meta.method` — статьи могут цитировать методику, не залезая в код.
+- **In-memory TTL-кеш** (класс `TTLCache` в insights.py): default 1 час, env `INSIGHTS_CACHE_TTL_SEC`. Выбран вместо materialized view: один инстанс на Render free-tier, ноль зависимостей, не нужны миграция и оркестрация REFRESH. `maxsize=256` с выселением истёкших/ближайших к истечению — защита памяти от перебора параметров.
+- **`backend/tests/test_insights_cache.py`** — 7 pytest'ов на TTLCache (hit/miss/expiry/refresh/eviction) без БД, время инъектируется параметром `now`.
+
+### Changed
+- **`backend/app/core/rate_limit.py`** — `/analytics/insights/` добавлен в `HEAVY_SEGMENTS` (20/minute). Обоснование: TTL-кеш защищает только от повторов одинаковых запросов; перебор `brand_id`/`period_days` генерирует cache-miss'ы и бьёт по БД напрямую — heavy-лимит закрывает этот вектор. Для легитимных статей 20/min с избытком (4 запроса на страницу). Тест `test_insights_paths_are_heavy` добавлен в test_rate_limit.py.
+- **`backend/app/core/config.py`** — новая настройка `INSIGHTS_CACHE_TTL_SEC` (default 3600).
+- **`backend/app/api/v1/router.py`** — подключён `insights.router`.
+- **README** — секция «Инсайты для статей» в §API, env-переменная, структура проекта, heavy-список rate limiting.
+
+### Impact
+- Контент-страницы могут пуллить живые цифры («модель X подешевела на N% за 90 дней», «Toyota — волатильность M%») вместо хардкода в текст. Первый запрос после деплоя/истечения TTL платит полную цену SQL (сотни мс на full-scan price_history), дальше — из памяти. Схема БД не менялась.
+
+---
+
 ## 2026-07-05 — Rate limiting на публичные API endpoints (t-0005)
 
 ### Added

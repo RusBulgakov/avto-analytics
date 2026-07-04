@@ -17,7 +17,7 @@ app/core/rate_limit.py — простой in-memory rate limiter (fixed window, 
 Конфигурация через env (см. app/core/config.py):
 - RATE_LIMIT_ENABLED  — выключатель (default: true)
 - RATE_LIMIT_GLOBAL   — лимит на все /api/* пути, формат "N/period" (default: "120/minute")
-- RATE_LIMIT_HEAVY    — лимит на тяжёлые analytics-эндпоинты (default: "20/minute")
+- RATE_LIMIT_HEAVY    — лимит на тяжёлые analytics/insights-эндпоинты (default: "20/minute")
 
 period ∈ second | minute | hour | day.
 """
@@ -74,7 +74,15 @@ class RateLimitMiddleware:
     - global: всё остальное под /api/
     """
 
-    HEAVY_SEGMENTS = ("/profit-ranking", "/profitability", "/backtest", "/forecast")
+    HEAVY_SEGMENTS = (
+        "/profit-ranking",
+        "/profitability",
+        "/backtest",
+        "/forecast",
+        # insights/* кешируются (TTL 1h), но кеш обходится перебором query-параметров
+        # (brand_id — незамкнутое пространство ключей) → heavy-лимит обязателен
+        "/analytics/insights/",
+    )
     EXEMPT_PATHS = ("/health", "/api/docs", "/api/redoc", "/openapi.json")
     # Защита от unbounded роста памяти: при превышении — чистка истёкших окон
     MAX_BUCKETS = 10_000

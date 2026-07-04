@@ -26,6 +26,10 @@ def make_app(**limiter_kwargs) -> TestClient:
     async def profit_ranking():
         return []
 
+    @app.get("/api/v1/analytics/insights/price-drop-leaders")
+    async def insights_drop_leaders():
+        return {}
+
     app.add_middleware(RateLimitMiddleware, **limiter_kwargs)
     return TestClient(app)
 
@@ -47,6 +51,17 @@ def test_heavy_limit_stricter_than_global():
         assert client.get("/api/v1/analytics/profit-ranking").status_code == 200
     # Третий heavy-запрос — 429, хотя глобальный лимит далеко не исчерпан
     assert client.get("/api/v1/analytics/profit-ranking").status_code == 429
+    # Лёгкие эндпоинты при этом живы
+    assert client.get("/api/v1/analytics/brands").status_code == 200
+
+
+def test_insights_paths_are_heavy():
+    # /analytics/insights/* — heavy-класс: TTL-кеш обходится перебором
+    # query-параметров, поэтому кеша без лимитера недостаточно
+    client = make_app(global_rate="100/minute", heavy_rate="2/minute")
+    for _ in range(2):
+        assert client.get("/api/v1/analytics/insights/price-drop-leaders").status_code == 200
+    assert client.get("/api/v1/analytics/insights/price-drop-leaders").status_code == 429
     # Лёгкие эндпоинты при этом живы
     assert client.get("/api/v1/analytics/brands").status_code == 200
 
