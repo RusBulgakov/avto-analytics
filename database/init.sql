@@ -143,6 +143,66 @@ CREATE INDEX idx_price_history_listing ON price_history(listing_id);
 CREATE INDEX idx_price_history_recorded_at ON price_history(recorded_at);
 
 -- =============================================
+-- ХОЛОДНЫЙ АРХИВ
+-- =============================================
+-- Давно-неактивные объявления (is_active=FALSE, last_seen_at старше
+-- ARCHIVE_THRESHOLD_DAYS, default 30) переносятся сюда из listings
+-- скриптом parsers/common/archive_old.py (workflow archive.yml),
+-- чтобы горячая таблица не упиралась в лимит Neon free tier (~512 MB).
+-- Зеркала listings/price_history + archived_at. Без FK на горячие
+-- таблицы (архив холодный, id остаются обычными числами) и с
+-- минимумом индексов (индексы едят хранилище, ради которого архив
+-- и заведён). Полные комментарии к дизайну —
+-- database/migrations/002_listings_archive.sql.
+
+CREATE TABLE IF NOT EXISTS listings_archive (
+    id                  UUID PRIMARY KEY,          -- исходный id из listings
+    source_id           INT NOT NULL,
+    external_id         VARCHAR(255) NOT NULL,
+    brand_id            INT,
+    model_id            INT,
+    title               TEXT,
+    year                SMALLINT,
+    mileage_km          INT,
+    engine_volume_cc    INT,
+    engine_power_hp     SMALLINT,
+    body_type_id        INT,
+    fuel_type_id        INT,
+    transmission_id     INT,
+    drive_type_id       INT,
+    color               VARCHAR(50),
+    city                VARCHAR(100),
+    region              VARCHAR(100),
+    condition           VARCHAR(20),
+    listing_url         TEXT,
+    is_active           BOOLEAN,
+    first_seen_at       TIMESTAMPTZ,
+    last_seen_at        TIMESTAMPTZ,
+    closed_at           TIMESTAMPTZ,
+    last_checked_at     TIMESTAMPTZ,
+    is_emergency        BOOLEAN,
+    is_customs_cleared  BOOLEAN,
+    flags_updated_at    TIMESTAMPTZ,
+    is_in_stock         BOOLEAN,
+    archived_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_listings_archive_archived_at
+    ON listings_archive (archived_at);
+
+CREATE TABLE IF NOT EXISTS price_history_archive (
+    id          BIGINT PRIMARY KEY,     -- исходный id из price_history
+    listing_id  UUID NOT NULL,          -- без FK: listings_archive холодный
+    price_kzt   BIGINT NOT NULL,
+    price_usd   INT,
+    recorded_at TIMESTAMPTZ,
+    archived_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_price_history_archive_listing
+    ON price_history_archive (listing_id);
+
+-- =============================================
 -- ПОЛЬЗОВАТЕЛИ И ПОДПИСКИ
 -- =============================================
 

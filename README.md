@@ -19,7 +19,8 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│   GitHub Actions — 3 независимых workflow                        │
+│   GitHub Actions — 7 workflow (3 главных ниже; ещё fetch_fx,     │
+│   kolesa_flags, kolesa_liveness, archive — см. §Workflows)       │
 │                                                                  │
 │  kolesa_full.yml      — 2× в сутки (08:00 + 20:00 UTC)           │
 │  matrix [shard 0, 1, 2]      ─ ~99 фидов на шард, 350-мин timeout│
@@ -154,6 +155,21 @@ TELEGRAM_BOT_TOKEN    — токен Telegram бота (опционально)
 TELEGRAM_CHAT_ID      — ID чата для уведомлений (опционально)
 ```
 
+### Продакшн (GitHub repo Variables — не secrets)
+
+```
+ARCHIVE_DRY_RUN       — '0' включает реальный перенос в еженедельном archive.yml;
+                        пока не установлена (или '1') — cron работает в dry-run
+```
+
+### Архивация (env скрипта parsers/common/archive_old.py)
+
+```
+ARCHIVE_THRESHOLD_DAYS — порог "давно неактивен" в днях (default 30, минимум 7)
+ARCHIVE_BATCH          — размер пачки за транзакцию (default 5000)
+ARCHIVE_DRY_RUN        — '1' (default, безопасно): только печать плана; '0' — перенос
+```
+
 ### Локально (.env)
 
 ```env
@@ -188,13 +204,16 @@ NEXT_PUBLIC_SITE_URL=https://kolesa-frontend.onrender.com
 ├── .github/workflows/
 │   ├── kolesa_full.yml            # Kolesa.kz — 2× в сутки, 3 шарда параллельно
 │   ├── daily_parsers.yml          # Лёгкие парсеры — каждые 6ч (mycar/newauto/avtorynok/olx)
-│   └── alive_check.yml            # Оживление inactive — каждые 6ч + auto после kolesa
+│   ├── alive_check.yml            # Оживление inactive — каждые 6ч + auto после kolesa
+│   ├── kolesa_liveness.yml        # Liveness sweep (детектор «продано») — 4×/сутки
+│   └── archive.yml                # Холодная архивация inactive >30d — раз в неделю (dry-run по умолчанию)
 ├── backend/
 │   └── app/
 │       ├── api/v1/endpoints/      # analytics.py (все /api/v1/analytics/*), auth.py
 │       └── core/                  # config, database, security
 ├── database/
-│   └── init.sql                   # Схема БД + seed данные
+│   ├── init.sql                   # Схема БД + seed данные
+│   └── migrations/                # 001 liveness last_checked_at, 002 listings_archive
 ├── frontend/
 │   ├── public/                    # robots.txt + sitemap.xml — build-артефакты (не в git, создаёт prebuild-скрипт)
 │   ├── scripts/
@@ -226,6 +245,7 @@ NEXT_PUBLIC_SITE_URL=https://kolesa-frontend.onrender.com
 │   │   ├── proxy_manager.py       # Загрузка и проверка прокси (семафор 200)
 │   │   ├── notifier.py            # Telegram: send_*, send_*_with_id, edit_telegram_message
 │   │   ├── deactivate.py          # Entrypoint для deactivate_old_listings
+│   │   ├── archive_old.py         # Холодная архивация: inactive >30d → listings_archive (dry-run default)
 │   │   └── refresh_proxies.py     # Standalone обновление пула прокси
 │   ├── kolesa/
 │   │   ├── parser.py              # JSON-extraction, 297 фидов + sharding + Telegram progress
@@ -309,6 +329,22 @@ Time-boxed 300 мин, 4×/сутки (`15 1,7,13,19 UTC`), ~2 req/s. Резюм
 `listings.last_checked_at`. Поглощает роль `alive_check` (тот лишь реанимировал inactive,
 но не ставил `closed_at`). См. `parsers/kolesa/liveness.py`.
 
+### `archive.yml` — холодная архивация старых inactive
+
+```
+Расписание: 45 2 * * 0 (UTC)     → раз в неделю, вс 02:45 (тихий слот)
+Ручной запуск: workflow_dispatch с inputs dry_run (default '1') и threshold_days (default '30')
+timeout: 60 мин, concurrency group: archive-old
+
+Один job:
+  archive — parsers/common/archive_old.py: is_active=FALSE + last_seen_at
+            старше ARCHIVE_THRESHOLD_DAYS (30) переносятся пачками по 5000
+            в listings_archive + price_history_archive и удаляются из
+            горячих таблиц (одна транзакция на пачку, идемпотентно)
+```
+
+**Безопасно по умолчанию:** и cron, и ручной запуск идут в **dry-run** (печатают план: COUNT + разбивка по source + строки price_history — записи нет), пока владелец не установит **repo variable `ARCHIVE_DRY_RUN=0`** (Settings → Secrets and variables → Actions → Variables) после ревью плана. Перед первым реальным прогоном нужно применить миграцию `database/migrations/002_listings_archive.sql` в Neon SQL Editor.
+
 ---
 
 ## 🗄️ Схема БД
@@ -325,9 +361,14 @@ listings      (id UUID, source_id, brand_id, model_id, external_id,
 price_history (id, listing_id, price_kzt, price_usd, recorded_at)
 body_types / fuel_types / transmission_types / drive_types  — справочники
 users / subscription_plans / user_subscriptions             — пользователи
+
+-- Холодный архив (миграция 002): inactive >30 дней уезжают сюда из listings
+-- еженедельным workflow archive.yml (без FK на горячие таблицы)
+listings_archive      (те же колонки, что listings, + archived_at)
+price_history_archive (те же колонки, что price_history, + archived_at)
 ```
 
-> **Neon free tier:** ~512 MB хранилища ≈ 3–4 месяца данных при ежедневном парсинге.
+> **Neon free tier:** ~512 MB хранилища ≈ 3–4 месяца данных при ежедневном парсинге. Чтобы горячая `listings` не упёрлась в лимит, давно-неактивные объявления (is_active=FALSE, last_seen_at >30 дней) еженедельно переносятся в `listings_archive`/`price_history_archive` (`.github/workflows/archive.yml` → `parsers/common/archive_old.py`).
 
 ---
 

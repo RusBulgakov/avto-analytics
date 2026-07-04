@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-07-05 — Холодная архивация: inactive >30d → listings_archive (t-0003)
+
+### Added
+- **`database/migrations/002_listings_archive.sql`** — холодные таблицы `listings_archive` (зеркало `listings` + `archived_at`) и `price_history_archive` (зеркало `price_history` + `archived_at`). Явный список колонок (не `LIKE listings`) — схема архива зафиксирована и не зависит от будущих `ALTER TABLE listings`. Без FK на горячие таблицы (архив холодный, `brand_id`/`source_id` — обычные числа). Индексы минимальные: PK + `archived_at` + `price_history_archive(listing_id)` — больше не добавляем, индексы едят то хранилище, ради которого архив заведён. Idempotent (`IF NOT EXISTS`), применять вручную в Neon SQL Editor. Таблицы также добавлены в `database/init.sql` (schema contract).
+- **`parsers/common/archive_old.py`** — переносит `is_active=FALSE AND last_seen_at < NOW() - ARCHIVE_THRESHOLD_DAYS` (default 30) в архив пачками по `ARCHIVE_BATCH` (default 5000): в ОДНОЙ транзакции на пачку — `INSERT` в оба архива (`ON CONFLICT DO NOTHING`) + `DELETE FROM listings` (`FOR UPDATE SKIP LOCKED` — не дедлочимся с парсерами). **`ARCHIVE_DRY_RUN=1` по умолчанию** — печатает план (COUNT + разбивка по source через JOIN sources + число строк price_history) и ничего не пишет; план печатается и перед реальным прогоном (правило bulk-SQL из CLAUDE.md). Идемпотентно: повторный прогон архивирует 0. Защита: `ARCHIVE_THRESHOLD_DAYS < 7` → отказ (моложе deactivate-порога 168h — риск ложно-мёртвых).
+- **`.github/workflows/archive.yml`** — еженедельно (вс 02:45 UTC, тихий слот между kolesa_full/daily/alive) + `workflow_dispatch` (inputs: `dry_run`, `threshold_days`). Cron остаётся в dry-run, пока владелец не установит **repo variable `ARCHIVE_DRY_RUN=0`** после ревью плана.
+
+### Решение по price_history (FK)
+- `price_history.listing_id REFERENCES listings(id) ON DELETE CASCADE` — простой DELETE молча уничтожил бы историю цен, а именно в ней аналитическая ценность (тренды, forecast, backtest). Поэтому **price_history архивируется вместе с listing** в `price_history_archive` в той же транзакции, ДО DELETE (каскад после этого удаляет уже скопированные строки). Альтернатива «оставить строки» невозможна без снятия FK, «удалить» — потеря данных.
+
+### Impact
+- Горячая `listings` (285k+ строк) перестаёт монотонно расти — давно-мёртвые объявления уезжают в холодные таблицы, отодвигая лимит Neon free tier (~512 MB). История сохраняется полностью (архив читается обычным SQL/UNION при необходимости).
+- **Деплой:** (1) применить миграцию `002` в Neon SQL Editor; (2) запустить workflow вручную с `dry_run=1`, посмотреть план; (3) запустить с `dry_run=0` (первый перенос); (4) установить repo variable `ARCHIVE_DRY_RUN=0`, чтобы еженедельный cron работал по-настоящему.
+
+---
+
 ## 2026-07-05 — SEO-фундамент: robots.txt + sitemap.xml + canonical/OG meta (t-0002)
 
 ### Added
