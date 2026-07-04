@@ -16,6 +16,10 @@ async def init_db():
         "dsn": settings.db_url_raw,
         "min_size": 2,
         "max_size": 10,
+        # Neon Pooler (PgBouncer, transaction mode) не поддерживает prepared
+        # statements между транзакциями — без этого ловится
+        # InvalidSQLStatementNameError (см. CLAUDE.md; парсеры уже делают так же).
+        "statement_cache_size": 0,
     }
     if settings.db_requires_ssl:
         kwargs["ssl"] = _ssl.create_default_context()
