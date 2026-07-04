@@ -342,6 +342,16 @@ export default function ModelPage() {
                                     {derived.count != null && derived.count > 0 && (
                                         <Badge variant="up">● Ликвидная</Badge>
                                     )}
+                                    <Link
+                                        href={{
+                                            pathname: '/compare',
+                                            query: { items: `${(brand.slug ?? brand.name).toLowerCase()}:${(model.slug ?? model.name).toLowerCase()}` },
+                                        }}
+                                        className="btn btn-ghost"
+                                        style={{ fontSize: 12 }}
+                                    >
+                                        Сравнить с…
+                                    </Link>
                                 </div>
                                 <div style={{ color: 'var(--text-muted)', fontSize: 13, maxWidth: 640 }}>
                                     {derived.count != null

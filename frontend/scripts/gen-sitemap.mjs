@@ -22,6 +22,9 @@ const SITE_URL = (
 const ROUTES = [
     { path: '/', changefreq: 'daily', priority: '1.0' },
     { path: '/brands', changefreq: 'daily', priority: '0.8' },
+    // /compare без параметров — осмысленный лендинг (пикер моделей);
+    // параметризованные /compare?items=… в sitemap не включаем.
+    { path: '/compare', changefreq: 'weekly', priority: '0.6' },
     { path: '/profitability', changefreq: 'daily', priority: '0.8' },
     { path: '/forecast', changefreq: 'weekly', priority: '0.7' },
     { path: '/articles', changefreq: 'weekly', priority: '0.7' },

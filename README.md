@@ -257,6 +257,7 @@ NEXT_PUBLIC_SENTRY_DSN=
 │   ├── pages/
 │   │   ├── index.tsx              # Дашборд (KPIs + chart + feed + heatmap + funnel + map + boxplot)
 │   │   ├── brands.tsx             # Каталог марок
+│   │   ├── compare.tsx            # Сравнение 2–3 моделей (?items=brand:model,brand:model)
 │   │   ├── profitability.tsx      # Рейтинг рентабельности
 │   │   ├── forecast.tsx           # Прогноз цен: OLS-регрессия V3 (KZT + USD)
 │   │   ├── articles/              # Блог: index (список) + [slug] (getStaticPaths → /articles/<slug>)

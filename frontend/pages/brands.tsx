@@ -1,5 +1,6 @@
 // pages/brands.tsx — каталог марок: плитка + поиск + клик → фильтр на дашборде
 import { useMemo, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
 
@@ -57,14 +58,19 @@ export default function BrandsPage() {
                                     : `${fmt.int(brands?.length ?? 0)} марок · ${fmt.int(total)} активных объявлений`}
                             </div>
                         </div>
-                        <input
-                            className="filter-input"
-                            type="search"
-                            value={q}
-                            onChange={e => setQ(e.target.value)}
-                            placeholder="Поиск по марке…"
-                            style={{ width: 260, height: 32 }}
-                        />
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <Link href="/compare" className="btn btn-ghost" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
+                                Сравнить модели →
+                            </Link>
+                            <input
+                                className="filter-input"
+                                type="search"
+                                value={q}
+                                onChange={e => setQ(e.target.value)}
+                                placeholder="Поиск по марке…"
+                                style={{ width: 260, height: 32 }}
+                            />
+                        </div>
                     </div>
 
                     {isLoading ? (
