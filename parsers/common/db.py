@@ -84,39 +84,68 @@ _CITY_NORMALIZATIONS = {
 }
 
 
-# Слова, после которых «модель» из user-текста превращается в мусор
+# «Модель» из user-текста часто содержит мусорный кириллический хвост
 # («camry тоета камри на разбор», «accent в продаже!!!», «alphard в идеальном
-# состоянии»). Модель = ведущая последовательность ASCII-токенов (латиница/
-# цифры), максимум 3 токена. Полностью кириллические имена (редкие легитимные
-# случаи типа «Газель Некст») оставляем, но режем до 2 токенов.
-_MODEL_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.\-+]*$")
+# состоянии»). Режем хвост, начиная с первого кириллического токена — НО не
+# трогаем легитимные кириллические части имён («5 серия», «E-Класс»),
+# перечисленные в _MODEL_LEGIT_CYRILLIC.
+_CYRILLIC_RE = re.compile(r"[а-яА-ЯёЁ]")
+_MODEL_LEGIT_CYRILLIC = {"серия", "класс", "поколение", "кузов"}
+# Алиасы брендов для срезания ведущего «(Lada) 2114» → «2114»
+_BRAND_ALIAS_WORDS = {
+    "vaz": {"lada", "ваз", "лада"},
+    "mercedes-benz": {"mercedes", "мерседес", "benz"},
+    "volkswagen": {"vw"},
+}
 
 
-def _sanitize_model_name(raw: Optional[str]) -> Optional[str]:
-    """«camry тоета камри на разбор» → «Camry»; «Land Cruiser Prado» → как есть.
+def _sanitize_model_name(raw: Optional[str], brand_slug: Optional[str] = None) -> Optional[str]:
+    """«camry тоета камри на разбор» → «Camry»; «Land Cruiser Prado» → как есть;
+    «5 серия (E39)» → как есть (легитимная кириллица не режется).
     Возвращает None, если после чистки не осталось осмысленного имени."""
     if not raw:
         return None
-    tokens = re.sub(r"[!?()«»\"']", " ", str(raw)).split()
+    tokens = re.sub(r"[!?«»\"]", " ", str(raw)).split()
+    # Убираем артефакты вида «(Lada) 2114» / «Lada 2114» — ведущий токен,
+    # совпадающий с брендом, это не часть модели.
+    brand_words: set[str] = set()
+    if brand_slug:
+        brand_words = {w for w in brand_slug.replace("-", " ").split()}
+        brand_words |= _BRAND_ALIAS_WORDS.get(brand_slug, set())
+    while tokens and tokens[0].strip("()").lower() in brand_words:
+        tokens.pop(0)
     if not tokens:
         return None
+    first_is_ascii = not _CYRILLIC_RE.search(tokens[0])
     clean: list[str] = []
+    cut = False
     for t in tokens:
-        if _MODEL_TOKEN_RE.fullmatch(t):
-            clean.append(t)
-            if len(clean) >= 3:
+        if first_is_ascii and _CYRILLIC_RE.search(t):
+            if t.strip("()").lower() in _MODEL_LEGIT_CYRILLIC:
+                # «5 серия», «E-Класс …» — легитимное имя, ничего не режем
+                clean = tokens
+                cut = False
                 break
-        else:
+            cut = True
             break
-    if clean:
-        # Однословные lower-имена приводим к Capitalize, чтобы upsert не
-        # перетирал канонический «Camry» на «camry» (правило name-конфликта
-        # выбирает новое имя при равном числе слов).
-        pretty = [t.capitalize() if t.isalpha() and t.islower() else t for t in clean]
-        name = " ".join(pretty)
-    else:
-        # Имя целиком не-ASCII (кириллица) — доверяем источнику, но режем хвост
-        name = " ".join(tokens[:2])
+        clean.append(t)
+        if len(clean) >= 5:
+            break
+    if not clean:
+        # Имя целиком кириллическое («Газель Некст») — доверяем, но режем хвост
+        clean = tokens[:2]
+    name = " ".join(t.strip("()") for t in clean if t.strip("()"))
+    if cut:
+        # После обрезки мусора однословные lower-имена приводим к Capitalize
+        # («camry» → «Camry»), короткие буквенно-цифровые — к UPPER («k5» → «K5»),
+        # чтобы не перетирать канонические имена при upsert'е.
+        def _pretty(t: str) -> str:
+            if t.isalpha() and t.islower():
+                return t.capitalize()
+            if t.isalnum() and t.islower() and len(t) <= 4:
+                return t.upper()
+            return t
+        name = " ".join(_pretty(t) for t in name.split())
     name = name.strip(" ,.-")
     return name[:40] or None
 
@@ -260,8 +289,16 @@ async def save_listing(conn: asyncpg.Connection, data: dict) -> str:
     # ПЕРЕсчитываем slug, иначе мусорный slug плодит мусорные модели.
     if data.get("model_name") or data.get("model_slug"):
         raw_model = data.get("model_name") or (data.get("model_slug") or "").replace("-", " ")
-        clean_model = _sanitize_model_name(raw_model)
-        data = {**data, "model_name": clean_model, "model_slug": _slugify(clean_model)}
+        clean_model = _sanitize_model_name(raw_model, data.get("brand_slug"))
+        if clean_model is None:
+            data = {**data, "model_name": None, "model_slug": None}
+        elif not _CYRILLIC_RE.search(clean_model):
+            # ASCII-имя: slug пересчитываем, чтобы мусорный хвост не плодил модели
+            data = {**data, "model_name": clean_model, "model_slug": _slugify(clean_model)}
+        else:
+            # Имя с кириллицей («5 серия E39»): slugify её теряет — оставляем
+            # slug парсера, обновляем только имя
+            data = {**data, "model_name": clean_model}
 
     if data.get("brand_slug") and data.get("model_slug"):
         # Предпочитаем model_name которое парсер уже извлёк (multi-word типа
