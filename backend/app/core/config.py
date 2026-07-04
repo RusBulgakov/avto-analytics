@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     # TTL in-memory кеша /analytics/insights/* (секунды). См. endpoints/insights.py
     INSIGHTS_CACHE_TTL_SEC: int = 3600
 
+    # Sentry (t-0006). Пустой DSN ⇒ Sentry полностью выключен (локалка/CI не шумят).
+    SENTRY_DSN: str = ""
+    SENTRY_TRACES_SAMPLE_RATE: float = 0.1
+    SENTRY_ENVIRONMENT: str = "production"
+
     @property
     def db_url(self) -> str:
         if self.DATABASE_URL:

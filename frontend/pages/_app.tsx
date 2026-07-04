@@ -3,6 +3,11 @@ import type { AppProps } from 'next/app';
 import { Inter, Space_Grotesk, JetBrains_Mono } from 'next/font/google';
 import { useEffect } from 'react';
 import '@/styles/globals.css';
+import { initSentry } from '@/lib/sentry';
+
+// Sentry: module-level, чтобы ловить ошибки максимально рано (до первого
+// рендера). Внутри guard на typeof window и пустой DSN — на билде это no-op.
+initSentry();
 
 const body = Inter({
     subsets: ['latin', 'cyrillic'],

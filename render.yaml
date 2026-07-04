@@ -27,6 +27,9 @@ services:
         value: "30"
       - key: ALGORITHM
         value: HS256
+      # Sentry DSN бэкенда (t-0006). Пусто/не задано ⇒ Sentry выключен
+      - key: SENTRY_DSN
+        sync: false
 
   # ─────────────────────────────────────────
   # Frontend: Next.js static export (free, unlimited, never sleeps)
@@ -45,6 +48,10 @@ services:
       # Публичный URL фронта для canonical/OG-тегов и sitemap/robots
       # (если не задан — fallback https://kolesa-frontend.onrender.com)
       - key: NEXT_PUBLIC_SITE_URL
+        sync: false
+      # Sentry DSN фронта (t-0006), инлайнится в бандл на билде.
+      # Пусто/не задано ⇒ Sentry выключен
+      - key: NEXT_PUBLIC_SENTRY_DSN
         sync: false
     routes:
       - type: rewrite

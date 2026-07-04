@@ -14,6 +14,20 @@ from app.api.v1.router import api_router
 
 logger = logging.getLogger(__name__)
 
+# Sentry (t-0006) — инициализируем ДО создания app, чтобы интеграция FastAPI
+# успела обернуть все middleware/handlers. Пустой SENTRY_DSN ⇒ полный no-op:
+# sentry_sdk даже не импортируется, локалка и CI не шумят.
+if settings.SENTRY_DSN:
+    import sentry_sdk
+
+    sentry_sdk.init(
+        dsn=settings.SENTRY_DSN,
+        traces_sample_rate=settings.SENTRY_TRACES_SAMPLE_RATE,
+        send_default_pii=False,
+        environment=settings.SENTRY_ENVIRONMENT,
+    )
+    logger.info("Sentry инициализирован (environment=%s)", settings.SENTRY_ENVIRONMENT)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

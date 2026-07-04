@@ -203,6 +203,11 @@ RATE_LIMIT_HEAVY=20/minute    # (20/minute) per-IP лимит на profit-rankin
 # Insights (опционально)
 INSIGHTS_CACHE_TTL_SEC=3600   # (3600) TTL in-memory кеша /api/v1/analytics/insights/*
 
+# Sentry backend (опционально). Пустой/не задан DSN ⇒ Sentry полностью выключен
+SENTRY_DSN=                        # DSN проекта в Sentry (только в Render env, не в репо!)
+SENTRY_TRACES_SAMPLE_RATE=0.1      # (0.1) доля перфоманс-трейсов
+SENTRY_ENVIRONMENT=production      # (production) тег environment в событиях
+
 # Telegram (опционально)
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
@@ -210,6 +215,11 @@ TELEGRAM_CHAT_ID=
 # Frontend (SEO): публичный URL сайта для canonical/OG-тегов и sitemap/robots.
 # Если не задан — fallback https://kolesa-frontend.onrender.com
 NEXT_PUBLIC_SITE_URL=https://kolesa-frontend.onrender.com
+
+# Sentry frontend (опционально): @sentry/browser, только клиентский init
+# (static export — без серверных хуков). DSN инлайнится в бандл на билде;
+# пустой ⇒ Sentry выключен, SDK грузится лениво отдельным chunk'ом
+NEXT_PUBLIC_SENTRY_DSN=
 ```
 
 ---

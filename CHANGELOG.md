@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-07-05 — Sentry: трекинг ошибок backend + frontend (t-0006)
+
+### Added
+- **Backend:** `sentry-sdk[fastapi]==2.64.0` в `backend/requirements.txt`. Init в `backend/app/main.py` ДО создания `app` (чтобы FastAPI-интеграция обернула все middleware/handlers), настройки в `config.py`: `SENTRY_DSN` (default `""`), `SENTRY_TRACES_SAMPLE_RATE` (default `0.1`), `SENTRY_ENVIRONMENT` (default `production`), `send_default_pii=False`. Пустой DSN ⇒ `sentry_sdk` даже не импортируется — локалка и CI работают как раньше, ноль шума.
+- **Frontend:** `@sentry/browser` (^10.63.0), НЕ `@sentry/nextjs` — проект собирается с `output: 'export'` (нет серверного runtime), а `@sentry/nextjs` требует webpack-плагин + auth-токен для sourcemaps и генерирует бесполезные server/edge-конфиги. Клиентский init в `frontend/lib/sentry.ts`, вызывается module-level из `_app.tsx`; DSN — `NEXT_PUBLIC_SENTRY_DSN` (инлайнится на билде), `tracesSampleRate: 0.1`, `sendDefaultPii: false`. SDK подгружается **динамическим import'ом** в отдельный async-chunk (~110 kB gzip, после гидрации): статический import раздувал First Load JS каждой страницы с 86.4 до 133 kB, с динамическим — 87.7 kB (+1.3 kB glue).
+- Env-plumbing: `SENTRY_DSN` (backend) и `NEXT_PUBLIC_SENTRY_DSN` (frontend) в `render.yaml` (`sync: false` — значения только в Render dashboard) и `.env.example`. Секреты в репо не попадают.
+- Тесты: `backend/tests/test_sentry_init.py` (2 шт. — дефолты настроек, клиент неактивен при пустом DSN).
+
+### Impact
+- С пустым DSN оба приложения ведут себя ровно как раньше (проверено: import backend, `npm run build`, все тесты). Чтобы включить: владелец создаёт проекты в Sentry и прописывает DSN в Render env (backend: `SENTRY_DSN`, frontend: `NEXT_PUBLIC_SENTRY_DSN` + rebuild). Реальная доставка событий проверяется только с настоящим DSN.
+
+---
+
 ## 2026-07-05 — Pool metrics: мониторинг утечек соединений к Neon (t-0015)
 
 ### Added

@@ -9,6 +9,7 @@
         "start": "next start"
     },
     "dependencies": {
+        "@sentry/browser": "^10.63.0",
         "@types/leaflet": "^1.9.12",
         "axios": "^1.6.7",
         "date-fns": "^3.6.0",
