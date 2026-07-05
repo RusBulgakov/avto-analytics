@@ -395,6 +395,8 @@ timeout: 60 мин, concurrency group: archive-old
 
 **Безопасно по умолчанию:** и cron, и ручной запуск идут в **dry-run** (печатают план: COUNT + разбивка по source + строки price_history — записи нет), пока владелец не установит **repo variable `ARCHIVE_DRY_RUN=0`** (Settings → Secrets and variables → Actions → Variables) после ревью плана. Перед первым реальным прогоном нужно применить миграцию `database/migrations/002_listings_archive.sql` в Neon SQL Editor.
 
+**Урок первого прогона (2026-07-05):** архивные таблицы живут в том же Neon-проекте, поэтому перенос сам по себе места НЕ освобождает — INSERT в архив растит базу раньше, чем DELETE освободит (первый bulk-прогон упёрся в 512 MB на пачке 24). Рабочая процедура на free tier: **архив = staging-буфер**: (1) прогон archive_old переносит пачки в `*_archive`; (2) буфер выгружается локально (`COPY ... TO` → `archive-dumps/*.csv.gz` в корне проекта, вне git) с построчной CSV-сверкой; (3) `TRUNCATE listings_archive, price_history_archive`; (4) `VACUUM listings, price_history` — мёртвое место становится переиспользуемым, и вставки парсеров месяцами не растят файлы (Neon-лимит блокирует только РАСШИРЕНИЕ файлов). Автоматический еженедельный real-run включать только после того, как эта выгрузка автоматизирована; пока `ARCHIVE_DRY_RUN` остаётся '1' (cron печатает план).
+
 ---
 
 ## 🗄️ Схема БД
