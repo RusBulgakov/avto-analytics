@@ -4,6 +4,7 @@ app/api/v1/endpoints/analytics.py
 """
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Optional
 from fastapi import APIRouter, Query, Depends, HTTPException
 
@@ -275,6 +276,7 @@ async def get_profitability(
 @router.get("/summary", summary="Сводная статистика платформы")
 async def get_summary(
     brand_id: list[int] = Query(None),
+    model_id: list[int] = Query(None),
     city: list[str] = Query(None),
     source: list[str] = Query(None),
     year: list[int] = Query(None),
@@ -290,6 +292,8 @@ async def get_summary(
 
     if brand_id:
         conditions.append(f"l.brand_id = ANY(${i}::int[])"); params.append(brand_id); i += 1
+    if model_id:
+        conditions.append(f"l.model_id = ANY(${i}::int[])"); params.append(model_id); i += 1
     if city:
         conditions.append(f"l.city = ANY(${i}::text[])"); params.append(city); i += 1
     if source:
@@ -340,6 +344,7 @@ async def get_summary(
 @router.get("/market-overview", summary="Обзор рынка по маркам/моделям (публичный)")
 async def market_overview(
     brand_id: list[int] = Query(None, description="Опциональный массив ID марок"),
+    model_id: list[int] = Query(None, description="Опциональный массив ID моделей"),
     city: list[str] = Query(None),
     source: list[str] = Query(None),
     year: list[int] = Query(None),
@@ -370,6 +375,8 @@ async def market_overview(
 
     if brand_id:
         conditions.append(f"l.brand_id = ANY(${i}::int[])"); params.append(brand_id); i += 1
+    if model_id:
+        conditions.append(f"l.model_id = ANY(${i}::int[])"); params.append(model_id); i += 1
     if city:
         conditions.append(f"l.city = ANY(${i}::text[])"); params.append(city); i += 1
     if source:
@@ -397,6 +404,7 @@ async def market_overview(
                 {latest_cte}
                 SELECT
                     m.name AS brand,
+                    m.slug AS slug,
                     COUNT(DISTINCT l.id) AS active_listings,
                     ROUND(AVG(lp.price_kzt))::bigint AS avg_price_kzt,
                     MIN(lp.price_kzt) AS min_price_kzt,
@@ -406,7 +414,7 @@ async def market_overview(
                 JOIN sources s ON s.id = l.source_id
                 LEFT JOIN latest_price lp ON lp.listing_id = l.id
                 WHERE {where} AND l.brand_id = {brand_id[0]}
-                GROUP BY m.name
+                GROUP BY m.name, m.slug
                 ORDER BY active_listings DESC
                 LIMIT 20
             """
@@ -416,6 +424,7 @@ async def market_overview(
                 {latest_cte}
                 SELECT
                     b.name AS brand,
+                    b.slug AS slug,
                     COUNT(DISTINCT l.id) AS active_listings,
                     ROUND(AVG(lp.price_kzt))::bigint AS avg_price_kzt,
                     MIN(lp.price_kzt) AS min_price_kzt,
@@ -425,7 +434,7 @@ async def market_overview(
                 JOIN sources s ON s.id = l.source_id
                 LEFT JOIN latest_price lp ON lp.listing_id = l.id
                 WHERE {where}
-                GROUP BY b.name
+                GROUP BY b.name, b.slug
                 ORDER BY active_listings DESC
                 LIMIT 20
             """
@@ -724,6 +733,7 @@ async def get_liquidity(
 async def get_recent(
     limit: int = Query(8, ge=1, le=50),
     brand_id: Optional[int] = Query(None),
+    model_id: Optional[int] = Query(None),
     city: list[str] = Query(None),
     source: list[str] = Query(None),
 ):
@@ -734,6 +744,8 @@ async def get_recent(
     i = 1
     if brand_id:
         conditions.append(f"l.brand_id = ${i}"); params.append(brand_id); i += 1
+    if model_id:
+        conditions.append(f"l.model_id = ${i}"); params.append(model_id); i += 1
     if city:
         conditions.append(f"l.city = ANY(${i}::text[])"); params.append(city); i += 1
     if source:
@@ -849,11 +861,25 @@ _CITY_COORDS: dict[str, tuple[str, float, float]] = {
 @router.get("/geo", summary="Карта KZ: координаты городов + объявления и ср. цена")
 async def get_geo(
     include_inactive: bool = Query(False, description="Учитывать снятые объявления"),
+    brand_id: list[int] = Query(None),
+    model_id: list[int] = Query(None),
+    year: list[int] = Query(None),
 ):
     """Возвращает список городов из словаря _CITY_COORDS с количеством объявлений
-    и средней ценой. Города БЕЗ координат отбрасываются."""
-    active_filter = "" if include_inactive else "AND l.is_active = TRUE"
-    slugs = list(_CITY_COORDS.keys())
+    и средней ценой. Города БЕЗ координат (и без объявлений) отбрасываются.
+    Слаги-синонимы одного города (kostanay/kostanai, uralsk/oral) агрегируются."""
+    conditions = ["LOWER(l.city) = ANY($1::text[])"]
+    params: list = [list(_CITY_COORDS.keys())]
+    i = 2
+    if not include_inactive:
+        conditions.append("l.is_active = TRUE")
+    if brand_id:
+        conditions.append(f"l.brand_id = ANY(${i}::int[])"); params.append(brand_id); i += 1
+    if model_id:
+        conditions.append(f"l.model_id = ANY(${i}::int[])"); params.append(model_id); i += 1
+    if year:
+        conditions.append(f"l.year = ANY(${i}::int[])"); params.append(year); i += 1
+    where = " AND ".join(conditions)
     async with DBSession() as conn:
         # Latest-price без window: см. profit-ranking — price_history пишется
         # только при изменении, 7-day window терял большинство listings.
@@ -871,22 +897,30 @@ async def get_geo(
             FROM listings l
             JOIN sources s ON s.id = l.source_id
             LEFT JOIN latest_price lp ON lp.listing_id = l.id
-            WHERE LOWER(l.city) = ANY($1::text[])
-              {active_filter}
+            WHERE {where}
             GROUP BY LOWER(l.city)
-        """, slugs)
+        """, *params)
     by_slug = {r["slug"]: r for r in rows}
-    result = []
+    # Агрегируем слаги-синонимы по display-имени, координаты берём из первого слага
+    merged: dict[str, dict] = {}
     for slug, (display, x, y) in _CITY_COORDS.items():
         r = by_slug.get(slug)
-        result.append({
-            "slug": slug,
-            "name": display,
-            "x": x,
-            "y": y,
-            "listings": int(r["listings"]) if r else 0,
-            "avg_price_kzt": int(r["avg_price_kzt"]) if r and r["avg_price_kzt"] else None,
+        listings = int(r["listings"]) if r else 0
+        price_sum = (int(r["avg_price_kzt"]) * listings) if r and r["avg_price_kzt"] else 0
+        entry = merged.setdefault(display, {
+            "slug": slug, "name": display, "x": x, "y": y,
+            "listings": 0, "_price_sum": 0,
         })
+        entry["listings"] += listings
+        entry["_price_sum"] += price_sum
+    result = []
+    for entry in merged.values():
+        if entry["listings"] <= 0:
+            continue
+        price_sum = entry.pop("_price_sum")
+        entry["avg_price_kzt"] = round(price_sum / entry["listings"]) if price_sum else None
+        result.append(entry)
+    result.sort(key=lambda e: -e["listings"])
     return result
 
 

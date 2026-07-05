@@ -1,5 +1,6 @@
 // components/feed/RecentFeed.tsx — live stream of freshest listings
 import React from 'react';
+import Link from 'next/link';
 import { fmt } from '@/lib/format';
 
 export interface RecentItem {
@@ -43,20 +44,21 @@ export default function RecentFeed({ data, loading }: Props) {
     return (
         <div style={{ display: 'flex', flexDirection: 'column' }}>
             {data.map(item => {
-                const title = [item.brand, item.model].filter(Boolean).join(' ') || 'Без названия';
+                const title = [item.brand ? fmt.brandName(item.brand) : null, item.model]
+                    .filter(Boolean).join(' ') || 'Без названия';
                 const delta = item.price_delta_kzt ?? 0;
                 const deltaClass = delta > 0 ? 'up' : delta < 0 ? 'down' : '';
                 const deltaSign = delta > 0 ? '▲' : delta < 0 ? '▼' : '·';
                 const min = minutesAgo(item.first_seen_at);
 
                 return (
-                    <a
+                    // Строка ведёт на внутреннюю карточку /listing?id=…;
+                    // внешний сайт-источник — отдельной иконкой ↗ справа.
+                    <Link
                         key={item.id}
-                        href={item.listing_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
+                        href={`/listing?id=${encodeURIComponent(item.id)}`}
                         className="recent-row"
-                        title={`${title} ${item.year ?? ''} · ${item.city ?? ''}`}
+                        title={`${title} ${item.year ?? ''} · ${fmt.cityName(item.city)}`}
                     >
                         <div className="recent-main">
                             <div className="recent-title">
@@ -64,7 +66,7 @@ export default function RecentFeed({ data, loading }: Props) {
                                 {item.year ? <span className="dim"> · {item.year}</span> : null}
                             </div>
                             <div className="recent-meta mono">
-                                {item.city ?? '—'}
+                                {fmt.cityName(item.city)}
                                 {item.mileage_km != null ? ` · ${Math.round(item.mileage_km / 1000)} тыс.км` : ''}
                                 {' · '}
                                 <span style={{ textTransform: 'capitalize' }}>{item.source}</span>
@@ -74,13 +76,29 @@ export default function RecentFeed({ data, loading }: Props) {
                             <div className="mono tnum recent-price">
                                 {item.price_kzt != null ? fmt.price(item.price_kzt) + ' ₸' : '—'}
                             </div>
-                            <div className={`mono recent-delta ${deltaClass}`}>
-                                <span>{deltaSign}</span>
-                                {delta !== 0 ? fmt.price(Math.abs(delta)) : '—'}
+                            {/* Дельта только когда цена реально менялась — раньше в каждой строке висело «· —» */}
+                            {delta !== 0 && (
+                                <div className={`mono recent-delta ${deltaClass}`}>
+                                    <span>{deltaSign}</span>
+                                    {fmt.price(Math.abs(delta))}
+                                </div>
+                            )}
+                            <div className="mono dim recent-age">
+                                {fmt.relMin(min)}
+                                {' '}
+                                <a
+                                    href={item.listing_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    title="Открыть на сайте-источнике"
+                                    onClick={(e) => e.stopPropagation()}
+                                    style={{ color: 'var(--text-muted)', textDecoration: 'none' }}
+                                >
+                                    ↗
+                                </a>
                             </div>
-                            <div className="mono dim recent-age">{fmt.relMin(min)}</div>
                         </div>
-                    </a>
+                    </Link>
                 );
             })}
         </div>

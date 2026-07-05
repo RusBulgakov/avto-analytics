@@ -3,11 +3,12 @@ import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
-import { analyticsApi } from '@/lib/api';
+import { analyticsApi, authApi } from '@/lib/api';
 import { fmt } from '@/lib/format';
 import { useUsdKzt } from '@/hooks/useUsdKzt';
 import { useTheme } from '@/hooks/useTheme';
 import Tweaks from './Tweaks';
+import SearchPalette from './SearchPalette';
 
 interface SummaryResponse {
     active_listings?: number;
@@ -29,6 +30,38 @@ export default function Topbar() {
     const [mobileNavOpen, setMobileNavOpen] = useState(false);
     const [theme, setTheme] = useTheme();
     const toggleTheme = () => setTheme(theme === 'dark' ? 'light' : 'dark');
+    const [searchOpen, setSearchOpen] = useState(false);
+    const [userMenuOpen, setUserMenuOpen] = useState(false);
+
+    // Auth: токен читаем после mount (SSR/static HTML его не знает)
+    const [token, setToken] = useState<string | null>(null);
+    useEffect(() => {
+        setToken(localStorage.getItem('access_token'));
+    }, []);
+    const { data: me } = useSWR(
+        token ? ['auth-me', token] : null,
+        () => authApi.me(),
+        { revalidateOnFocus: false, shouldRetryOnError: false }
+    );
+
+    const logout = () => {
+        localStorage.removeItem('access_token');
+        localStorage.removeItem('refresh_token');
+        setToken(null);
+        setUserMenuOpen(false);
+    };
+
+    // Глобальный хоткей ⌘K / Ctrl+K → поиск
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+                e.preventDefault();
+                setSearchOpen(v => !v);
+            }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, []);
 
     // Закрываем mobile-меню при смене страницы
     useEffect(() => {
@@ -139,7 +172,12 @@ export default function Topbar() {
                     })()}
                 </div>
 
-                <button className="topbar-btn" type="button" aria-label="Поиск (не реализовано)">
+                <button
+                    className="topbar-btn"
+                    type="button"
+                    aria-label="Поиск по маркам и моделям"
+                    onClick={() => setSearchOpen(true)}
+                >
                     <span>⌕</span>
                     <span>Поиск</span>
                     <span className="kbd">⌘K</span>
@@ -157,6 +195,24 @@ export default function Topbar() {
                 >
                     <span aria-hidden>{theme === 'dark' ? '☾' : '☀'}</span>
                 </button>
+
+                {token ? (
+                    <button
+                        className="topbar-btn"
+                        type="button"
+                        onClick={() => setUserMenuOpen(v => !v)}
+                        aria-expanded={userMenuOpen}
+                        aria-label="Меню пользователя"
+                        title={me?.email ?? 'Профиль'}
+                    >
+                        <span>👤</span>
+                        <span>{me?.email ? me.email.split('@')[0] : 'Профиль'}</span>
+                    </button>
+                ) : (
+                    <Link href="/auth/login" className="topbar-btn" aria-label="Войти">
+                        <span>Войти</span>
+                    </Link>
+                )}
 
                 <button
                     className="topbar-btn"
@@ -214,6 +270,19 @@ export default function Topbar() {
                 </div>
             )}
 
+            {userMenuOpen && token && (
+                <div className="user-menu" role="menu">
+                    <div className="user-menu-email">{me?.email ?? '…'}</div>
+                    <div className="user-menu-plan">
+                        {me?.subscription?.display_name ?? 'Бесплатный план'}
+                    </div>
+                    <button type="button" className="user-menu-btn" onClick={logout}>
+                        Выйти
+                    </button>
+                </div>
+            )}
+
+            <SearchPalette open={searchOpen} onClose={() => setSearchOpen(false)} />
             <Tweaks open={tweaksOpen} onClose={() => setTweaksOpen(false)} />
         </>
     );

@@ -145,7 +145,7 @@ export default function ForecastPage() {
         { revalidateOnFocus: false }
     );
 
-    const { data: forecast, isLoading } = useSWR<ForecastResp>(
+    const { data: forecast, isLoading, error: forecastError } = useSWR<ForecastResp>(
         brandId ? ['forecast', brandId, modelId, yearFrom, yearTo, horizonDays] : null,
         () => analyticsApi.getForecast({
             brand_id: brandId!,
@@ -228,9 +228,9 @@ export default function ForecastPage() {
                                         style={{ height: 32 }}
                                     >
                                         <option value="">— выберите —</option>
-                                        {brands?.map(b => (
+                                        {brands?.filter(b => b.listings_count > 0).map(b => (
                                             <option key={b.id} value={b.id}>
-                                                {b.name} ({fmt.int(b.listings_count)})
+                                                {fmt.brandName(b.name)} ({fmt.int(b.listings_count)})
                                             </option>
                                         ))}
                                     </select>
@@ -422,6 +422,11 @@ export default function ForecastPage() {
                                     </div>
                                 ) : isLoading && !forecast ? (
                                     <div className="skeleton" style={{ height: 360, borderRadius: 8 }} />
+                                ) : forecastError && !forecast ? (
+                                    // 5xx/сеть — это НЕ «недостаточно данных», честно говорим об ошибке
+                                    <div style={{ height: 360, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--down)', fontSize: 13 }}>
+                                        Сервис прогноза временно недоступен — попробуйте обновить страницу
+                                    </div>
                                 ) : forecast?.error ? (
                                     <div style={{ height: 360, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--down)', fontSize: 13 }}>
                                         {forecast.error}

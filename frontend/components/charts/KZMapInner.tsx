@@ -1,12 +1,12 @@
 // components/charts/KZMapInner.tsx — client-only Leaflet map of Kazakhstan.
 // Wrapped by KZMap.tsx via next/dynamic (Leaflet needs window).
-import React, { useMemo } from 'react';
-import { useRouter } from 'next/router';
+import React, { useEffect, useMemo, useState } from 'react';
 import { MapContainer, TileLayer, CircleMarker, Tooltip } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 
 import { fmt } from '@/lib/format';
 import { useThemeStore } from '@/hooks/useTheme';
+import { useFilters } from '@/store/filters';
 
 export interface GeoCity {
     slug: string;
@@ -71,15 +71,15 @@ const MIN_R = 5;
 const MAX_R = 22;
 
 export default function KZMapInner({ data }: Props) {
-    const router = useRouter();
     // Компонент клиентский (dynamic ssr:false) — store к моменту рендера уже
     // инициализирован из data-theme, hydration-mismatch невозможен.
     const theme = useThemeStore(s => s.theme);
-    const isDark = theme === 'dark';
     const { up: UP, upDim: UP_DIM } = MARKER[theme];
     // Тайлы CartoCDN: dark_* / light_*. Внешние растровые тайлы CSS-переменными
     // не перекрасить — меняем URL; key форсирует пересоздание слоя при смене темы.
-    const tileVariant = isDark ? 'dark' : 'light';
+    const tileVariant = theme;
+    const selectedCities = useFilters(s => s.city);
+    const setCity = useFilters(s => s.setCity);
 
     const cities = useMemo(
         () =>
@@ -95,11 +95,16 @@ export default function KZMapInner({ data }: Props) {
 
     const maxListings = Math.max(1, ...cities.map(c => c.listings));
     const totalListings = cities.reduce((s, c) => s + c.listings, 0);
-    // Always-visible labels for the biggest markets (top 3 by volume)
-    const labelThreshold = useMemo(() => {
-        if (cities.length < 4) return 0;
+    // Always-visible labels for the biggest markets (top 3 by volume).
+    // Направление подписи чередуем по рангу, чтобы соседние города
+    // (Алматы/Шымкент) не накладывали свои плашки друг на друга.
+    const labelDirections = useMemo(() => {
         const sorted = [...cities].sort((a, b) => b.listings - a.listings);
-        return sorted[2]?.listings ?? Infinity;
+        const dirs: Record<string, 'top' | 'bottom'> = {};
+        sorted.slice(0, 3).forEach((c, idx) => {
+            dirs[c.slug] = idx % 2 === 0 ? 'top' : 'bottom';
+        });
+        return dirs;
     }, [cities]);
 
     return (
@@ -122,6 +127,7 @@ export default function KZMapInner({ data }: Props) {
                     attributionControl={false}
                     style={{ height: '100%', width: '100%', background: 'var(--bg-2)' }}
                 >
+                    {/* key: react-leaflet не пересоздаёт TileLayer при смене url — форсим */}
                     <TileLayer
                         key={`base-${tileVariant}`}
                         url={`https://{s}.basemaps.cartocdn.com/${tileVariant}_nolabels/{z}/{x}/{y}{r}.png`}
@@ -138,28 +144,31 @@ export default function KZMapInner({ data }: Props) {
                     {cities.map(c => {
                         const ratio = c.listings / maxListings;
                         const r = MIN_R + ratio * (MAX_R - MIN_R);
-                        const permanent = c.listings >= labelThreshold;
+                        const labelDir = labelDirections[c.slug];
+                        const isSelected = selectedCities.includes(c.slug);
                         return (
                             <CircleMarker
                                 key={c.slug}
                                 center={[c.lat, c.lng]}
                                 radius={r}
                                 pathOptions={{
-                                    color: UP,
-                                    fillColor: UP,
-                                    fillOpacity: 0.55,
+                                    color: isSelected ? '#f5c518' : UP,
+                                    fillColor: isSelected ? '#f5c518' : UP,
+                                    fillOpacity: isSelected ? 0.75 : 0.55,
                                     weight: 1.5,
                                     opacity: 0.9,
                                 }}
                                 eventHandlers={{
-                                    click: () => router.push(`/?city=${encodeURIComponent(c.slug)}`),
+                                    // Ставим/снимаем фильтр «Город» через store — sync-хук
+                                    // сам дополнит URL, не затирая остальные фильтры.
+                                    click: () => setCity(isSelected ? [] : [c.slug]),
                                 }}
                             >
                                 <Tooltip
-                                    direction="top"
-                                    offset={[0, -4]}
+                                    direction={labelDir ?? 'top'}
+                                    offset={[0, labelDir === 'bottom' ? 6 : -4]}
                                     opacity={1}
-                                    permanent={permanent}
+                                    permanent={labelDir != null}
                                     className="kz-map-tip"
                                 >
                                     <strong>{c.name}</strong>{' '}
@@ -186,7 +195,7 @@ export default function KZMapInner({ data }: Props) {
             >
                 <span>● РАЗМЕР = ОБЪЁМ РЫНКА · КЛИК = ФИЛЬТР</span>
                 <span>
-                    {cities.length} городов · {fmt.int(totalListings)} объявл.
+                    {cities.length} {fmt.plural(cities.length, ['город', 'города', 'городов'])} · {fmt.int(totalListings)} объявл.
                 </span>
             </div>
         </div>
