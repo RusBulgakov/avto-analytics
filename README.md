@@ -19,7 +19,8 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│   GitHub Actions — 3 независимых workflow                        │
+│   GitHub Actions — 7 workflow (3 главных ниже; ещё fetch_fx,     │
+│   kolesa_flags, kolesa_liveness, archive — см. §Workflows)       │
 │                                                                  │
 │  kolesa_full.yml      — 2× в сутки (08:00 + 20:00 UTC)           │
 │  matrix [shard 0, 1, 2]      ─ ~99 фидов на шард, 350-мин timeout│
@@ -154,6 +155,46 @@ TELEGRAM_BOT_TOKEN    — токен Telegram бота (опционально)
 TELEGRAM_CHAT_ID      — ID чата для уведомлений (опционально)
 ```
 
+### Продакшн (GitHub repo Variables — не secrets)
+
+```
+ARCHIVE_DRY_RUN       — '0' включает реальный перенос в еженедельном archive.yml;
+                        пока не установлена (или '1') — cron работает в dry-run
+```
+
+### Архивация (env скрипта parsers/common/archive_old.py)
+
+```
+ARCHIVE_THRESHOLD_DAYS — порог "давно неактивен" в днях (default 30, минимум 7)
+ARCHIVE_BATCH          — размер пачки за транзакцию (default 5000)
+ARCHIVE_DRY_RUN        — '1' (default, безопасно): только печать плана; '0' — перенос
+```
+
+### Smart-thresholds (env parsers/common/run_stats.py — алерт при тихой деградации)
+
+```
+PARSER_ALERT_DROP_PCT  — порог падения saved/new_count vs прошлый успешный прогон,
+                         в процентах (default 50: алерт если текущее < 50% прошлого)
+PARSER_ALERT_MIN_BASE  — шумовой порог (default 100): baseline-метрика ниже этого
+                         значения не сравнивается — мелкие фиды не алертят ложно
+```
+
+### Kolesa Phase 2 — discovery early-stop (env parsers/kolesa/early_stop.py; флаг ВЫКЛЮЧЕН)
+
+```
+KOLESA_EARLY_STOP        — '1' включает newest-first сортировку + early-stop + parse_cursor.
+                           Default '0' = поведение парсера полностью прежнее.
+                           НЕ ВКЛЮЧАТЬ, пока liveness-sweep заблокирован (t-0016) —
+                           см. «Известные особенности» ниже
+KOLESA_EARLY_STOP_PAGES  — сколько подряд страниц с 0 новых объявлений останавливают
+                           фид (default 3, минимум 1)
+KOLESA_SORT_PARAM        — query-param сортировки «свежие первыми» (default
+                           'sort_by=add_date-desc'; перед включением проверить на
+                           kolesa.kz вручную; пустая строка = не добавлять)
+KOLESA_CYCLE_ID          — идентификатор цикла discovery для parse_cursor
+                           (default: UTC-дата YYYY-MM-DD — один цикл в сутки)
+```
+
 ### Локально (.env)
 
 ```env
@@ -170,9 +211,31 @@ POSTGRES_PORT=5432
 # Backend
 SECRET_KEY=your_jwt_secret_here
 
+# Rate limiting (опционально, defaults в скобках; формат "N/second|minute|hour|day")
+RATE_LIMIT_ENABLED=true       # (true) выключатель лимитера
+RATE_LIMIT_GLOBAL=120/minute  # (120/minute) per-IP лимит на все /api/*
+RATE_LIMIT_HEAVY=20/minute    # (20/minute) per-IP лимит на profit-ranking/profitability/backtest/forecast/insights/*
+
+# Insights (опционально)
+INSIGHTS_CACHE_TTL_SEC=3600   # (3600) TTL in-memory кеша /api/v1/analytics/insights/*
+
+# Sentry backend (опционально). Пустой/не задан DSN ⇒ Sentry полностью выключен
+SENTRY_DSN=                        # DSN проекта в Sentry (только в Render env, не в репо!)
+SENTRY_TRACES_SAMPLE_RATE=0.1      # (0.1) доля перфоманс-трейсов
+SENTRY_ENVIRONMENT=production      # (production) тег environment в событиях
+
 # Telegram (опционально)
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
+
+# Frontend (SEO): публичный URL сайта для canonical/OG-тегов и sitemap/robots.
+# Если не задан — fallback https://kolesa-frontend.onrender.com
+NEXT_PUBLIC_SITE_URL=https://kolesa-frontend.onrender.com
+
+# Sentry frontend (опционально): @sentry/browser, только клиентский init
+# (static export — без серверных хуков). DSN инлайнится в бандл на билде;
+# пустой ⇒ Sentry выключен, SDK грузится лениво отдельным chunk'ом
+NEXT_PUBLIC_SENTRY_DSN=
 ```
 
 ---
@@ -184,40 +247,55 @@ TELEGRAM_CHAT_ID=
 ├── .github/workflows/
 │   ├── kolesa_full.yml            # Kolesa.kz — 2× в сутки, 3 шарда параллельно
 │   ├── daily_parsers.yml          # Лёгкие парсеры — каждые 6ч (mycar/newauto/avtorynok/olx)
-│   └── alive_check.yml            # Оживление inactive — каждые 6ч + auto после kolesa
+│   ├── alive_check.yml            # Оживление inactive — каждые 6ч + auto после kolesa
+│   ├── kolesa_liveness.yml        # Liveness sweep (детектор «продано») — 4×/сутки
+│   └── archive.yml                # Холодная архивация inactive >30d — раз в неделю (dry-run по умолчанию)
 ├── backend/
 │   └── app/
-│       ├── api/v1/endpoints/      # analytics.py (все /api/v1/analytics/*), auth.py
-│       └── core/                  # config, database, security
+│       ├── api/v1/endpoints/      # analytics.py (/api/v1/analytics/*), insights.py (/api/v1/analytics/insights/*), auth.py
+│       └── core/                  # config, database, security, rate_limit
 ├── database/
-│   └── init.sql                   # Схема БД + seed данные
+│   ├── init.sql                   # Схема БД + seed данные
+│   └── migrations/                # 001 liveness last_checked_at, 002 listings_archive, 003 parser_runs, 004 parse_cursor
 ├── frontend/
+│   ├── public/                    # robots.txt + sitemap.xml — build-артефакты (не в git, создаёт prebuild-скрипт)
+│   ├── scripts/
+│   │   └── gen-sitemap.mjs        # Генерация sitemap.xml/robots.txt из NEXT_PUBLIC_SITE_URL (npm prebuild)
 │   ├── components/
+│   │   ├── Seo.tsx                # SEO-теги страницы: canonical, OG (+og:type=article), twitter:card
 │   │   ├── layout/                # Topbar (с live-тикером), FilterBar
 │   │   ├── ui/                    # KPI, Badge, FilterDropdown
 │   │   ├── charts/                # PriceChart, BoxPlot, Heatmap, Funnel,
 │   │   │                          # KZMap (обёртка) + KZMapInner (Leaflet client-only)
 │   │   └── feed/                  # RecentFeed
+│   ├── content/
+│   │   └── articles/*.md          # SEO-статьи: frontmatter (title/description/date) + markdown
 │   ├── pages/
 │   │   ├── index.tsx              # Дашборд (KPIs + chart + feed + heatmap + funnel + map + boxplot)
 │   │   ├── brands.tsx             # Каталог марок
+│   │   ├── compare.tsx            # Сравнение 2–3 моделей (?items=brand:model,brand:model)
 │   │   ├── profitability.tsx      # Рейтинг рентабельности
 │   │   ├── forecast.tsx           # Прогноз цен: OLS-регрессия V3 (KZT + USD)
+│   │   ├── articles/              # Блог: index (список) + [slug] (getStaticPaths → /articles/<slug>)
 │   │   ├── model.tsx              # Детали модели (?brand=&model=)
 │   │   ├── listing.tsx            # Детали объявления (?id=)
 │   │   └── auth/                  # login, register
 │   ├── hooks/                     # useUsdKzt, useSyncFiltersWithUrl
 │   ├── store/filters.ts           # zustand filter store с URL-sync
 │   ├── styles/globals.css         # Все токены + виджеты
-│   └── lib/                       # api.ts, format.ts
+│   └── lib/                       # api.ts, format.ts, articles.ts (md → html, build-time only)
 ├── parsers/
 │   ├── requirements.txt           # Зависимости парсеров
 │   ├── common/
 │   │   ├── db.py                  # asyncpg пул, save_listing, deactivate_old_listings (168h)
+│   │   ├── city_normalizer.py     # Единая нормализация городов: alias-карта (кириллица/транслиты/KZ) → latin slug
 │   │   ├── http_client.py         # curl_cffi fetch + IPBlockedError + per-error retry strategy
 │   │   ├── proxy_manager.py       # Загрузка и проверка прокси (семафор 200)
 │   │   ├── notifier.py            # Telegram: send_*, send_*_with_id, edit_telegram_message
 │   │   ├── deactivate.py          # Entrypoint для deactivate_old_listings
+│   │   ├── archive_old.py         # Холодная архивация: inactive >30d → listings_archive (dry-run default)
+│   │   ├── audit_brands.py        # Read-only аудит: популярные бренды kolesa без своего фида
+│   │   ├── city_dry_run.py        # Read-only dry-run: DISTINCT city old → new (перед любым bulk-UPDATE)
 │   │   └── refresh_proxies.py     # Standalone обновление пула прокси
 │   ├── kolesa/
 │   │   ├── parser.py              # JSON-extraction, 297 фидов + sharding + Telegram progress
@@ -301,6 +379,22 @@ Time-boxed 300 мин, 4×/сутки (`15 1,7,13,19 UTC`), ~2 req/s. Резюм
 `listings.last_checked_at`. Поглощает роль `alive_check` (тот лишь реанимировал inactive,
 но не ставил `closed_at`). См. `parsers/kolesa/liveness.py`.
 
+### `archive.yml` — холодная архивация старых inactive
+
+```
+Расписание: 45 2 * * 0 (UTC)     → раз в неделю, вс 02:45 (тихий слот)
+Ручной запуск: workflow_dispatch с inputs dry_run (default '1') и threshold_days (default '30')
+timeout: 60 мин, concurrency group: archive-old
+
+Один job:
+  archive — parsers/common/archive_old.py: is_active=FALSE + last_seen_at
+            старше ARCHIVE_THRESHOLD_DAYS (30) переносятся пачками по 5000
+            в listings_archive + price_history_archive и удаляются из
+            горячих таблиц (одна транзакция на пачку, идемпотентно)
+```
+
+**Безопасно по умолчанию:** и cron, и ручной запуск идут в **dry-run** (печатают план: COUNT + разбивка по source + строки price_history — записи нет), пока владелец не установит **repo variable `ARCHIVE_DRY_RUN=0`** (Settings → Secrets and variables → Actions → Variables) после ревью плана. Перед первым реальным прогоном нужно применить миграцию `database/migrations/002_listings_archive.sql` в Neon SQL Editor.
+
 ---
 
 ## 🗄️ Схема БД
@@ -317,13 +411,41 @@ listings      (id UUID, source_id, brand_id, model_id, external_id,
 price_history (id, listing_id, price_kzt, price_usd, recorded_at)
 body_types / fuel_types / transmission_types / drive_types  — справочники
 users / subscription_plans / user_subscriptions             — пользователи
+
+-- Холодный архив (миграция 002): inactive >30 дней уезжают сюда из listings
+-- еженедельным workflow archive.yml (без FK на горячие таблицы)
+listings_archive      (те же колонки, что listings, + archived_at)
+price_history_archive (те же колонки, что price_history, + archived_at)
+
+-- Мониторинг парсеров (миграция 003): метрики каждого прогона для детекции
+-- «тихой деградации» (parsers/common/run_stats.py). Гранулярность
+-- (source_id, shard_index, shard_count) — шарды kolesa сравниваются только
+-- между собой. status='degraded' — прогон упал ниже порога и baseline не понижает.
+parser_runs   (id, source_id, shard_index, shard_count, saved, new_count,
+               active_after, status 'ok'|'degraded', finished_at)
+
+-- Курсор discovery-парсера kolesa (миграция 004, t-0017): резюмируемость фидов.
+-- Пишется/читается parsers/kolesa/early_stop.py ТОЛЬКО при KOLESA_EARLY_STOP=1
+-- (флаг по умолчанию выключен). feed_key = slug фида ("almaty", "toyota/camry");
+-- cycle_id = UTC-дата (или KOLESA_CYCLE_ID); PK (source_id, feed_key).
+parse_cursor  (source_id, feed_key, last_page, cycle_id, updated_at)
 ```
 
-> **Neon free tier:** ~512 MB хранилища ≈ 3–4 месяца данных при ежедневном парсинге.
+> **Neon free tier:** ~512 MB хранилища ≈ 3–4 месяца данных при ежедневном парсинге. Чтобы горячая `listings` не упёрлась в лимит, давно-неактивные объявления (is_active=FALSE, last_seen_at >30 дней) еженедельно переносятся в `listings_archive`/`price_history_archive` (`.github/workflows/archive.yml` → `parsers/common/archive_old.py`).
 
 ---
 
 ## 🔌 API
+
+### Rate limiting
+
+Все `/api/*` эндпоинты защищены per-IP лимитером (in-memory fixed window, `backend/app/core/rate_limit.py`):
+
+- **Глобальный лимит:** `120/minute` на IP (env `RATE_LIMIT_GLOBAL`).
+- **Тяжёлые эндпоинты** — `/profit-ranking`, `/profitability`, `/backtest`, `/forecast` и все `/analytics/insights/*`: строже, `20/minute` (env `RATE_LIMIT_HEAVY`); их запросы также считаются в глобальном лимите. Insights кешируются на 1ч, но кеш обходится перебором query-параметров — поэтому лимит на них всё равно нужен.
+- **Исключены:** `/health`, `/api/docs`, `/api/redoc`, `/openapi.json`, CORS preflight (OPTIONS).
+- При превышении — `429` с JSON-телом и заголовком `Retry-After` (секунды до сброса окна).
+- Выключатель: `RATE_LIMIT_ENABLED=false`. Клиентский IP берётся из `X-Forwarded-For` (leftmost, за прокси Render), fallback — peer address.
 
 ### Аналитика — сводные
 
@@ -348,6 +470,17 @@ users / subscription_plans / user_subscriptions             — пользова
 | `GET` | `/api/v1/analytics/forecast` | Прогноз медианной цены V2: OLS на двух осях (KZT + USD-нормализованной), with FX-вклад. Params: `brand_id` (обяз.), `model_id?`, `year?`, `year_from?`, `year_to?`, `history_days=90`, `horizon_days=30`. Returns `{historical, forecast, trend_pct_per_month_kzt, trend_pct_per_month_usd, fx_impact_pct, r2_kzt, r2_usd, current_fx_rate, sample_size}`. |
 | `GET` | `/api/v1/analytics/backtest` | Ретро-тест стратегии "купить дешевле p25 группы, продать в течение N дней". Params: `brand_id?`, `model_id?`, `year_from?`, `year_to?`, `period_days=60`, `discount_threshold=0.15`, `hold_days=45`. Returns `{total_signals, hits, win_rate, avg_realized_margin, median_days_to_sell, top_winners[]}`. |
 
+### Инсайты для статей (pre-computed, кеш 1ч)
+
+Готовые агрегаты под контент: статьи пуллят цифры отсюда вместо хардкода. Все ответы содержат `meta.method` с описанием методики. Кеш — in-memory TTL (env `INSIGHTS_CACHE_TTL_SEC`, default 3600 сек), сбрасывается при рестарте бэка. Входят в heavy-класс rate-limit'а (`20/minute`).
+
+| Метод | Путь | Описание |
+|-------|------|----------|
+| `GET` | `/api/v1/analytics/insights/price-drop-leaders` | Топ моделей по падению медианной цены. Params: `period_days=90\|180\|365`, `limit=10` (1–50), `min_samples=20` (5–200, минимум объявлений в каждом окне). Сравнивает медиану 14-дневного окна начала периода с последними 14 днями; возвращает только реально подешевевшие. Returns `{meta, leaders[{brand, model, model_id, median_then_kzt, median_now_kzt, drop_pct, sample_then, sample_now}]}`. |
+| `GET` | `/api/v1/analytics/insights/seasonality` | Средняя/медианная цена по календарным месяцам за всю историю + сезоны (взвешенно по наблюдениям). Params: `brand_id?`. Returns `{meta, months[{month, avg_price_kzt, median_price_kzt, observations, listings}], seasons[{season, months, avg_price_kzt, observations}]}`. |
+| `GET` | `/api/v1/analytics/insights/brand-volatility` | Волатильность цены по брендам: coefficient of variation (stddev/mean, %) месячных медиан. Params: `period_days=365` (90–730), `min_months=3`, `min_listings_per_month=30`, `limit=20`, `order=stable\|volatile`. Ниже `volatility_pct` = бренд стабильнее держит цену. Returns `{meta, brands[{brand, brand_id, months, avg_monthly_median_kzt, stddev_kzt, volatility_pct}]}`. |
+| `GET` | `/api/v1/analytics/insights/price-buckets` | Гистограмма текущих цен активных объявлений по корзинам. Params: `bucket_size_kzt=2000000`, `max_price_kzt=20000000` (всё дороже — в overflow-корзину `to_kzt=null`; 2–40 корзин). Returns `{meta, buckets[{from_kzt, to_kzt, count, share_pct}]}`. |
+
 ### Аналитика — детали объявления
 
 | Метод | Путь | Описание |
@@ -356,7 +489,7 @@ users / subscription_plans / user_subscriptions             — пользова
 | `GET` | `/api/v1/analytics/valuation?listing_id=...` | Fair-price оценка (p25/median/p75 похожих) |
 | `GET` | `/api/v1/analytics/similar?listing_id=...&limit=8` | Похожие объявления |
 
-Все аналитические endpoint'ы поддерживают фильтры: `brand_id[]`, `model_id[]`, `city[]`, `source[]`, `period_days`.
+Все аналитические endpoint'ы (кроме `/analytics/insights/*` — у них свои параметры, см. выше) поддерживают фильтры: `brand_id[]`, `model_id[]`, `city[]`, `source[]`, `period_days`.
 
 **`include_inactive: bool`** (default `false`) — поддерживается endpoint'ами `/brands`, `/models`, `/summary`, `/market-overview`, `/price-history`, `/price-boxplot`, `/heatmap`, `/cities`, `/geo`. Управляется toggle "Активные / Все" в FilterBar. По умолчанию возвращаются только `is_active=TRUE` объявления; при `true` — вся история. `/recent`, `/liquidity`, `/profit-ranking`, `/listing/{id}`, `/valuation`, `/similar` намеренно не реагируют (см. CHANGELOG).
 
@@ -367,7 +500,7 @@ users / subscription_plans / user_subscriptions             — пользова
 | `GET` | `/api/v1/analytics/brands` | Список марок с числом активных объявлений |
 | `GET` | `/api/v1/analytics/models?brand_id=1` | Модели по марке |
 | `GET` | `/api/v1/analytics/cities` | Города с числом объявлений |
-| `GET` | `/health` | Healthcheck |
+| `GET` | `/health` | Healthcheck + метрики asyncpg-пула: `{"status":"ok","service":"automarket-api","pool":{"size":N,"idle":N,"max":N}}` (`pool: null` до инициализации; без запросов к БД) |
 
 ### Auth
 
@@ -381,11 +514,14 @@ users / subscription_plans / user_subscriptions             — пользова
 
 ## 🐛 Известные особенности
 
+- **Нормализация городов (`parsers/common/city_normalizer.py`):** все парсеры пишут город через единый `normalize_city()` (вызывается в `save_listing`): кириллица/транслиты/казахские названия → canonical latin slug (`Алматы`/`Alma-Ata` → `almaty`, `Aqtau`/`Ақтау` → `aktau`, `Oskemen`/`Усть-Каменогорск` → `ust-kamenogorsk`). Canonical slug, отображаемый на карте, обязан иметь координаты в `_CITY_COORDS` (`backend/.../analytics.py`). **Урок инцидента:** суффикс `" - ..."` режется только с пробелом ПЕРЕД дефисом — паттерн `\s*-\s*` без обязательных пробелов однажды испортил 18,481 `ust-kamenogorsk` → `ust`; дефисы внутри слов неприкосновенны (регресс-тест в `tests/test_city_normalizer.py`). Перед любым bulk-UPDATE городов — обязательный dry-run `python -m parsers.common.city_dry_run` (read-only, печатает old → new по всем distinct).
 - **Kolesa 5000-лимит на фид:** kolesa.kz глушит пагинацию на 250 страниц × 20 = 5000 объявлений. Поэтому для тяжёлых брендов (Toyota, Lada, Hyundai) одного brand-feed недостаточно — добавлены **model-level feed'ы** в `MODEL_FEEDS`. Каждый под-фид имеет свой 5000-лимит. Toyota: покрытие 5k → ~75k (brand + 14 моделей).
 - **Kolesa anti-bot из GHA:** kolesa.kz агрессивно блокирует burst запросов из Azure-датацентра. Эмпирически 4 шарда × 3 concurrent (12 одновременных) → IP блок за ~10 минут; ~80 req/min ловит накопительный бан через ~4ч. **Текущая рабочая конфигурация: 3 шарда × 2 concurrent (6 одновременных) + delay 4–7с (~66 req/min)** — укладывается в 350-мин timeout без бана. Не повышайте rate/concurrency — потеряете весь прогон.
 - **Kolesa structured exit codes:** парсер возвращает `0`/`1`/`2`/`10` в зависимости от исхода. Workflow gate'ит `deactivate-old` через `if: success()` → при `IPBlockedError` или partial-успехе deactivate **не запускается**, сохраняем существующие данные. Без этого 1 неудачный прогон стирал 11k+ живых объявлений (произошло 2026-04-23).
 - **Kolesa model validator (`_validate_model`):** парсер отсекает синтетические модели где `model == brand` или `model == год выпуска`. **НЕ отсекает модели-числа** (Audi 80, BMW 525, Mazda 626, Porsche 911, Lada 2107) — это валидные имена. Listing с невалидной моделью сохраняется с `model_id=NULL`.
 - **Deactivate threshold 168h:** объявления помечаются `is_active=FALSE` только если парсер не видел их ≥7 дней. Override через `DEACTIVATE_THRESHOLD_HOURS` env. Слишком маленькое значение (48h ранее) ложно-мертвило живые объявления, которые парсер просто не успел обойти.
+- **Smart-thresholds (тихая деградация):** каждый прогон парсера пишет `saved`/`new_count` в `parser_runs` и сравнивает с последним успешным прогоном той же гранулярности (шарды kolesa — только между собой). Падение более чем на `PARSER_ALERT_DROP_PCT`% (default 50) → один ⚠️-алерт в Telegram и статус `degraded` (baseline не понижается). Ловит поломку селекторов/частичный бан при exit 0 — ровно так молча ломался OLX до фикса 2026-05-02. Всё best-effort: сбой мониторинга прогон не роняет. Нужна миграция `database/migrations/003_parser_runs.sql` (до неё — просто warning в логах).
+- **Kolesa Phase 2 early-stop — реализован, но ВЫКЛЮЧЕН (`KOLESA_EARLY_STOP=0`):** код discovery early-stop по спеке §5.3 (newest-first сортировка фида + остановка после N подряд страниц без новых объявлений + резюмируемый курсор `parse_cursor`) лежит в `parsers/kolesa/early_stop.py` и включается только флагом `KOLESA_EARLY_STOP=1`. **Почему выключен:** по дизайну early-stop передаёт обязанность «жив/продан» liveness-sweep'у (§5.2), а он сейчас заблокирован — kolesa.kz тарпитит detail-GET'ы с IP GitHub Actions (backlog t-0016). Если включить early-stop без работающего liveness, объявления с глубоких страниц перестанут получать бамп `last_seen_at`, и слепой 168h-deactivate массово закроет живые объявления. Порядок включения: применить миграцию `004_parse_cursor.sql` → проверить query-param сортировки на сайте (`KOLESA_SORT_PARAM`, default `sort_by=add_date-desc`) → решить судьбу liveness (t-0016) → только потом `KOLESA_EARLY_STOP=1`.
 - **Alive-check worker:** `parsers/kolesa/alive_check.py` берёт inactive и проверяет их URL напрямую. Работает как компенсация для ситуаций когда объявление активно на сайте, но парсер до него не добрался. Rate-limit: ~2 req/s, kolesa не банит. Запускается каждые 6h + автоматически после успешного `kolesa_full`.
 - **Kolesa атрибуты:** На страницах листинга kolesa.kz возвращает только `brand`, `model`, `avgPrice` в `attributes` — поля `mileage_km`, `engine_volume_cc`, `fuel_type` и т.д. будут `NULL`. Полные данные доступны только на странице конкретного объявления (парсинг детальных страниц не реализован).
 - **Neon Pooler + asyncpg:** Используется `statement_cache_size=0` — обязательно при работе через PgBouncer в transaction-pooling режиме, иначе `InvalidSQLStatementNameError`.
@@ -393,7 +529,8 @@ users / subscription_plans / user_subscriptions             — пользова
 - **avtorynok.kz пагинация:** Сайт возвращает одни и те же ~16 объявлений на любом номере страницы. Парсер останавливается после первого повтора ID (стоп по `seen_ids`).
 - **newauto.kz TLS fingerprinting:** Сайт блокирует curl/aiohttp — возвращает пустой ответ. Работает только через `curl_cffi` с Chrome impersonation. Каталог (/catalog) содержит 241 модель без числовых ID; используем slug-ID вида `bmw-x5`.
 - **OLX.kz ID формат:** OLX сменил числовые ID (`ID12345`) на буквенно-цифровые (`IDqMNaw`). Парсер использует `r"ID([A-Za-z0-9]+)"` для поддержки обоих форматов.
-- **Next.js static export:** `output: 'export'` → все страницы статичны. Dynamic-компоненты (Leaflet и т.п.) **обязаны** грузиться через `next/dynamic({ ssr: false })`. Dynamic routes использовать через query-string (`?id=`, `?brand=`), не через `[param]`-папки.
+- **Next.js static export:** `output: 'export'` → все страницы статичны. Dynamic-компоненты (Leaflet и т.п.) **обязаны** грузиться через `next/dynamic({ ssr: false })`. Dynamic routes с данными из БД — через query-string (`?id=`, `?brand=`), не через `[param]`-папки. Исключение: `[param]`-папки допустимы, когда ВСЕ пути известны на билде (`getStaticPaths` + `fallback: false`) — так работает блог `/articles/[slug]` (контент — файлы `content/articles/*.md` в репо).
+- **Блог /articles:** статьи — markdown-файлы с frontmatter (`title`/`description`/`date`) в `frontend/content/articles/`. Новая статья = один `.md`-файл: страница, список и sitemap подхватывают её автоматически на билде. Рендер markdown — `marked` (build-time, в клиентский бандл не попадает); canonical/OG/JSON-LD Article на каждой странице.
 - **Render static БЕЗ catch-all rewrite:** в `render.yaml` у kolesa-frontend НЕ должно быть rewrite `/* → /index.html` — Render Static сам отдаёт `brands.html` для `/brands`. С rewrite'ом любой прямой URL показывал дашборд (deep-links и SEO мертвы). Убрано 2026-07-05.
 - **bcrypt закреплён на 4.0.1:** passlib 1.7.4 несовместим с bcrypt≥4.1 (удалён `bcrypt.__about__`) — `hash_password` кидает AttributeError, register отдаёт 500. Не обновляйте bcrypt без миграции с passlib.
 - **Санитизация моделей в `save_listing`:** mycar/avtorynok/olx приносят user-текст в model («camry тоета камри на разбор») — `_sanitize_model_name` режет до ведущих ASCII-токенов (макс 3) и пересчитывает slug, чтобы listing попадал в каноническую модель. Полностью кириллические имена не отбрасываются (режутся до 2 токенов), но slug у них пустой → модель не создаётся.

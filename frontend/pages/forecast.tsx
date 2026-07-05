@@ -1,7 +1,8 @@
 // pages/forecast.tsx — реальный прогноз цен (OLS regression на price_history)
 import { useMemo, useState } from 'react';
-import Head from 'next/head';
 import useSWR from 'swr';
+
+import Seo from '@/components/Seo';
 import {
     ResponsiveContainer, ComposedChart, Area, Line, XAxis, YAxis,
     CartesianGrid, Tooltip, Legend,
@@ -194,9 +195,11 @@ export default function ForecastPage() {
 
     return (
         <>
-            <Head>
-                <title>Прогноз — Авто Аналитика KZ</title>
-            </Head>
+            <Seo
+                title="Прогноз цен на авто в Казахстане | Авто Аналитика KZ"
+                description="Прогноз медианной цены автомобилей в Казахстане: OLS-регрессия по истории цен, тренд в тенге и долларах, доверительный интервал."
+                path="/forecast"
+            />
 
             <div className="app">
                 <Topbar />

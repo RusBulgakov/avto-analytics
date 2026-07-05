@@ -1,8 +1,9 @@
 // pages/index.tsx — Dashboard (trading terminal redesign, steps 1–6)
 import { useState } from 'react';
-import Head from 'next/head';
 import Link from 'next/link';
 import useSWR from 'swr';
+
+import Seo from '@/components/Seo';
 
 import Topbar from '@/components/layout/Topbar';
 import FilterBar from '@/components/layout/FilterBar';
@@ -179,11 +180,11 @@ export default function Dashboard() {
 
     return (
         <>
-            <Head>
-                <title>Авто Аналитика KZ — Торговый терминал</title>
-                <meta name="description" content="Аналитика авторынка Казахстана. Индекс цен, рентабельность, live-лента объявлений." />
-                <meta name="viewport" content="width=device-width, initial-scale=1" />
-            </Head>
+            <Seo
+                title="Авто Аналитика KZ — Торговый терминал"
+                description="Аналитика авторынка Казахстана. Индекс цен, рентабельность, live-лента объявлений."
+                path="/"
+            />
 
             <div className="app">
                 <Topbar />

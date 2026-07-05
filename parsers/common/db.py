@@ -6,6 +6,7 @@ common/db.py
   1. DATABASE_URL (Neon / serverless) — единая строка подключения с SSL
   2. POSTGRES_HOST/USER/PASSWORD/DB (Docker) — обратная совместимость
 """
+import logging
 import os
 import re
 import ssl as _ssl
@@ -15,73 +16,14 @@ from urllib.parse import urlparse, parse_qs
 
 import asyncpg
 
+logger = logging.getLogger(__name__)
+
+# Единая нормализация городов вынесена в отдельный модуль (t-0014).
+# Кириллица ("Алматы") → latin slug ("almaty"); без этого ~1500 listings
+# выпадали с карты (geo endpoint матчит по slug'у из _CITY_COORDS).
+from parsers.common.city_normalizer import normalize_city
+
 _pool: asyncpg.Pool | None = None
-
-
-# Cyrillic city names → latin slug. Парсеры (особенно OLX/mycar) часто
-# сохраняют город в кириллице ("Алматы"), а frontend/geo endpoint матчит
-# по slug'у ("almaty"). Без нормализации здесь ~1500 listings выпадают
-# с карты. Этот набор должен быть синхронизирован с _CITY_COORDS в
-# backend/app/api/v1/endpoints/analytics.py — каждый latin slug должен
-# иметь координаты.
-_CITY_NORMALIZATIONS = {
-    # 20 крупнейших городов (есть в _CITY_COORDS — отображаются на карте)
-    'алматы': 'almaty', 'астана': 'astana', 'шымкент': 'shymkent',
-    'караганда': 'karaganda', 'актобе': 'aktobe', 'актау': 'aktau',
-    'костанай': 'kostanai', 'павлодар': 'pavlodar',
-    'талдыкорган': 'taldykorgan', 'уральск': 'uralsk', 'атырау': 'atyrau',
-    'тараз': 'taraz', 'усть-каменогорск': 'ust-kamenogorsk', 'семей': 'semey',
-    'кокшетау': 'kokshetau', 'кызылорда': 'kyzylorda',
-    'петропавловск': 'petropavlovsk', 'темиртау': 'temirtau',
-    'туркестан': 'turkestan', 'экибастуз': 'ekibastuz',
-    # Средние города (есть в _CITY_COORDS)
-    'жезказган': 'zhezkazgan', 'риддер': 'ridder', 'балхаш': 'balkhash',
-    'кентау': 'kentau', 'жанаозен': 'zhanaozen', 'капчагай': 'kapchagay',
-    'рудный': 'rudny', 'степногорск': 'stepnogorsk', 'арыс': 'arys',
-    'арал': 'aral', 'аркалык': 'arkalyk', 'хромтау': 'khromtau',
-    'жетысай': 'zhetisay', 'сатпаев': 'satpayev', 'аксу': 'aksu',
-    'шу': 'shu',
-    # Long-tail — пригороды и райцентры. На карту не выводятся (нет в
-    # _CITY_COORDS), но slug-consistency для filters/aggregations.
-    # Алматинская область
-    'талгар': 'talgar', 'каскелен': 'kaskelen', 'есик': 'esik',
-    'жаркент': 'zharkent', 'текели': 'tekeli', 'уштобе': 'ushtobe',
-    'кордай': 'kordai', 'отеген': 'otegen', 'алмалыбак': 'almalybak',
-    'бесагаш': 'besagash', 'байтерек': 'bayterek',
-    # Конаев = переименованный Капчагай (с 2022)
-    'конаев': 'kapchagay', 'конаев (капшагай)': 'kapchagay',
-    'капшагай (конаев)': 'kapchagay', 'капшагай': 'kapchagay',
-    # Шымкентская область
-    'сарыагаш': 'saryagash', 'аксукент': 'aksukent', 'шиели': 'shieli',
-    'мерке': 'merke', 'арысь': 'arys',
-    # Атырауская / Мангистау
-    'кульсары': 'kulsary', 'бейнеу': 'beineu', 'балыкши': 'balykshi',
-    'еркинкала': 'erkinkala',
-    # Северный Казахстан
-    'щучинск': 'schuchinsk', 'булаево': 'bulayevo', 'бишкуль': 'bishkul',
-    'акколь': 'akkol', 'атбасар': 'atbasar', 'нура': 'nura',
-    'аягоз': 'ayagoz',
-    # Восточный Казахстан
-    'зыряновск': 'zyryanovsk', 'кокпекты': 'kokpekty',
-    'белоусовка': 'belousovka', 'прапорщиково': 'praporshchikovo',
-    # Западный Казахстан
-    'аксай': 'aksai', 'аральск': 'aralsk', 'жолбарыса калшораева': 'zholbarys',
-    # Костанайская область
-    'затобольск': 'zatobolsk', 'житикара': 'zhitikara',
-    # Прочие small towns (нормализуем для полной consistency)
-    'шахтинск': 'shakhtinsk', 'алга': 'alga', 'бектобе': 'bektobe',
-    'бесколь': 'beskol', 'белоярка': 'beloyarka', 'байтобе': 'baytobe',
-    'муткенова': 'mutkenova', 'чапаево': 'chapayevo',
-    'мичуринское': 'michurinskoye', 'нуркен': 'nurken',
-    'валиханово': 'valikhanovo', 'акбулак': 'akbulak',
-    'интернациональное': 'internatsionalnoye', 'сырдарья': 'syrdaria',
-    'балпык би': 'balpyk-bi', 'айдарлы': 'aydarly', 'алмалы': 'almaly',
-    'баянбай': 'bayanbay', 'байтерек': 'bayterek',
-    # Старые алиасы и kolesa-quirks
-    'semei': 'semey',
-    'kostanay': 'kostanai',  # альт-вариант slug
-    'oral': 'uralsk',        # казахское имя Уральска
-}
 
 
 # «Модель» из user-текста часто содержит мусорный кириллический хвост
@@ -159,27 +101,6 @@ def _slugify(t: Optional[str]) -> Optional[str]:
     return s or None
 
 
-def _normalize_city(c: Optional[str]) -> Optional[str]:
-    """
-    Нормализует city value для сохранения в БД:
-      - "Костанай - Сегодня в" / "Павлодар -" → strip suffix → "Костанай" / "Павлодар"
-      - "Алматы" (кириллица) → "almaty" (latin slug)
-      - "0" / "" → None
-      - неизвестные значения возвращаются как есть (не lower'им non-mapped, чтобы не
-        поломать существующие латинские slug'и типа 'ust-kamenogorsk')
-    """
-    if not c or c == "0":
-        return None
-    s = c.strip()
-    # Strip " - что-то" суффикс ТОЛЬКО с пробелами вокруг дефиса (не ломает
-    # 'ust-kamenogorsk' / 'land-rover'). Дефис без пробелов остаётся.
-    s = re.sub(r'\s+-\s*.*$', '', s).strip()
-    if not s:
-        return None
-    # Известный кириллический → latin slug
-    return _CITY_NORMALIZATIONS.get(s.lower(), s)
-
-
 def _parse_database_url(url: str) -> dict:
     """
     Парсит DATABASE_URL и возвращает kwargs для asyncpg.create_pool.
@@ -243,10 +164,43 @@ async def get_pool() -> asyncpg.Pool:
     return _pool
 
 
+def pool_stats() -> Optional[dict]:
+    """
+    Снимок метрик пула для мониторинга утечек соединений к Neon Pooler (t-0015).
+    Возвращает {"size": N, "idle": N, "max": N} или None, если пул
+    не инициализирован. Никогда не бросает исключений.
+    """
+    if _pool is None:
+        return None
+    try:
+        return {
+            "size": _pool.get_size(),
+            "idle": _pool.get_idle_size(),
+            "max": _pool.get_max_size(),
+        }
+    except Exception:  # noqa: BLE001 — метрики не должны ронять прогон
+        return None
+
+
+def log_pool_stats(prefix: str = "") -> None:
+    """Логирует "pool: size=X idle=Y max=Z". No-op если пул не инициализирован."""
+    stats = pool_stats()
+    if stats is None:
+        return
+    label = f"{prefix} " if prefix else ""
+    logger.info(
+        "%spool: size=%d idle=%d max=%d",
+        label, stats["size"], stats["idle"], stats["max"],
+    )
+
+
 async def close_pool() -> None:
-    """Корректно закрывает пул соединений."""
+    """Корректно закрывает пул соединений (перед этим логирует метрики пула)."""
     global _pool
     if _pool is not None:
+        # Единая точка end-of-run метрик для всех парсеров: size > idle здесь
+        # означает не возвращённые в пул соединения (утечка).
+        log_pool_stats("close_pool:")
         await _pool.close()
         _pool = None
 
@@ -267,7 +221,7 @@ async def save_listing(conn: asyncpg.Connection, data: dict) -> str:
     # 0. Нормализация city перед вставкой — гарантирует latin slug в БД
     # независимо от того, что прислал парсер (OLX/mycar часто кириллицу).
     if data.get("city"):
-        data = {**data, "city": _normalize_city(data["city"])}
+        data = {**data, "city": normalize_city(data["city"])}
 
     # 1. Upsert бренда
     if data.get("brand_slug"):

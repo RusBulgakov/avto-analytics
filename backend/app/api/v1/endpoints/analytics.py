@@ -1,8 +1,9 @@
-from __future__ import annotations
 """
 app/api/v1/endpoints/analytics.py
 Аналитические эндпоинты: фильтры, графики цен по времени, рентабельность.
 """
+from __future__ import annotations
+
 from datetime import timedelta
 from typing import Optional
 from fastapi import APIRouter, Query, Depends, HTTPException

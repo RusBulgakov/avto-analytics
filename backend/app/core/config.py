@@ -33,6 +33,19 @@ class Settings(BaseSettings):
     # CORS
     BACKEND_CORS_ORIGINS: List[str] = ["http://localhost:3000"]
 
+    # Rate limiting (см. app/core/rate_limit.py). Формат: "N/second|minute|hour|day"
+    RATE_LIMIT_ENABLED: bool = True
+    RATE_LIMIT_GLOBAL: str = "120/minute"   # все /api/* эндпоинты, per-IP
+    RATE_LIMIT_HEAVY: str = "20/minute"     # profit-ranking, profitability, backtest, forecast, insights/*
+
+    # TTL in-memory кеша /analytics/insights/* (секунды). См. endpoints/insights.py
+    INSIGHTS_CACHE_TTL_SEC: int = 3600
+
+    # Sentry (t-0006). Пустой DSN ⇒ Sentry полностью выключен (локалка/CI не шумят).
+    SENTRY_DSN: str = ""
+    SENTRY_TRACES_SAMPLE_RATE: float = 0.1
+    SENTRY_ENVIRONMENT: str = "production"
+
     @property
     def db_url(self) -> str:
         if self.DATABASE_URL:

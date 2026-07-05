@@ -4,6 +4,227 @@
 
 ---
 
+## 2026-07-05 — Kolesa Phase 2: discovery early-stop + parse_cursor, флаг-гейтед и ВЫКЛЮЧЕН (t-0017)
+
+### Added
+- **`parsers/kolesa/early_stop.py`** (новый): реализация спеки §5.3 — (1) newest-first сортировка фидов через query-param `KOLESA_SORT_PARAM` (default `sort_by=add_date-desc`; точное имя параметра в спеке помечено «подтвердить на сайте», поэтому оно env-конфигурируемо — неверная догадка чинится переменной, не кодом); (2) `EarlyStopTracker` — остановка фида после `KOLESA_EARLY_STOP_PAGES` (default 3) подряд страниц с 0 новых объявлений («новый» = `is_new` из `save_listing`, `RETURNING (xmax=0)`, т.е. чистый INSERT — доп. запросов не нужно, `parse_city` уже считает `page_new`); (3) резюмируемый курсор `parse_cursor` — чтение на старте фида (продолжение с `last_page+1` в рамках текущего `cycle_id`), best-effort запись после каждой страницы. `cycle_id` = `KOLESA_CYCLE_ID` env или UTC-дата `YYYY-MM-DD` (один discovery-цикл в сутки; новый день = фид с начала).
+- **`database/migrations/004_parse_cursor.sql`** + зеркало в `database/init.sql`: `parse_cursor(source_id, feed_key TEXT, last_page INT, cycle_id TEXT, updated_at, PK(source_id, feed_key))`. Применять вручную в Neon SQL Editor (idempotent); до миграции при включённом флаге курсор деградирует в warning, фид не падает.
+- **`tests/test_early_stop.py`** (18 тестов): подсчёт подряд-нулевых страниц, сброс на новых, порог/флаг/sort-param/cycle_id из env, `enabled=False` никогда не останавливает.
+
+### Changed
+- **`parsers/kolesa/parser.py`** — три хука в `parse_city`, все строго под `if es_enabled` (`KOLESA_EARLY_STOP=1`): sort-param к URL, чтение курсора перед циклом страниц, запись курсора + проверка early-stop после страницы. **Default `KOLESA_EARLY_STOP=0` → ни одна ветка не активна, поведение парсера идентично прежнему** (ни запросов к `parse_cursor`, ни изменения URL). Anti-bot параметры (3 шарда × 2 concurrent, delay) не тронуты; cron `kolesa_full.yml` и deactivate-логика не тронуты.
+
+### Impact
+- **Флаг сознательно ВЫКЛЮЧЕН по умолчанию.** По дизайну (спека §5.3/§5.4) early-stop отдаёт детекцию «жив/продан» liveness-sweep'у, а liveness сейчас заблокирован: kolesa.kz тарпитит detail-GET'ы с IP GitHub Actions (t-0016). Включение early-stop без liveness = глубокие страницы теряют бампы `last_seen_at` → слепой 168h-deactivate массово закроет живые объявления.
+- **Шаги владельца для включения (позже):** 1) применить `004_parse_cursor.sql` в Neon; 2) вручную проверить на kolesa.kz, что `?sort_by=add_date-desc` даёт «по дате добавления, свежие первыми» (иначе поправить `KOLESA_SORT_PARAM`); 3) принять решение по liveness (t-0016); 4) только после этого выставить `KOLESA_EARLY_STOP=1` в env workflow.
+
+---
+
+## 2026-07-05 — Страница сравнения моделей /compare (t-0012)
+
+### Added
+- **`frontend/pages/compare.tsx`** (новая): сравнение 2–3 моделей бок-о-бок. Вход через query-string `/compare?items=toyota:camry,kia:k5` — совместимо с `output: 'export'` (без `[param]`-роутов, все данные client-side через SWR). Slug-конвенция та же, что у `/model` (матч по `slug` ИЛИ `name`, case-insensitive).
+- **Метрики в колонке** (только из существующих endpoint'ов, бэкенд не тронут): медианная цена и тренд за период (30/90/180/365д) — из `/analytics/price-history` (среднее по `median_price_kzt`, дельта first→last `avg_price_kzt`); дней до продажи (медианный бакет) и «продано ≤14д %» + продаж за 180д — из `/analytics/liquidity` (`brand_id`+`model_id`); активные объявления — `listing_count` из price-history с fallback на `listings_count` из `/analytics/models`. В каждой колонке — существующий `PriceChart` (компонент single-series, наложение линий не умеет → мини-график на колонку, общий overlay не делали).
+- **Деградация:** 0 items → карточка-пикер (селекты марка/модель из готовых `/brands`+`/models`) + подсказка формата URL; 1 item → одна колонка + карточка «Добавьте вторую модель»; >3 → берутся первые 3; неизвестный slug → карточка «Не найдено в базе» с кнопкой удаления; битые фрагменты (`badformat` без `:`) игнорируются. URL — единственный источник правды (add/remove делают `router.replace` shallow) → всегда shareable.
+- **Ссылки входа:** `model.tsx` — кнопка «Сравнить с…» в hero (ведёт на `/compare?items=<текущая модель>`); `brands.tsx` — компактная ссылка «Сравнить модели →» в шапке каталога (у брендов нет модельных строк — это естественное место с минимальным диффом).
+- **Sitemap:** `/compare` добавлен в `ROUTES` `gen-sitemap.mjs` — пустое состояние является осмысленным лендингом (пикер); параметризованные `/compare?items=…` в sitemap не включаются.
+
+### Impact
+- Чисто клиентская фича: новых зависимостей и изменений бэкенда нет. `npm run build` проходит, `out/compare.html` в экспорте (First Load JS 229 kB — как у `/model`). Live-проверка на mock-API: обе колонки, add/remove через пикер, все ветки деградации, mobile (375px) — колонки стекуются.
+
+---
+
+## 2026-07-05 — Экспорт CSV на странице Profitability (t-0011)
+
+### Added
+- **`frontend/lib/csv.ts`** (новый, без зависимостей): `toCsv()` — RFC 4180-экранирование (кавычки при `"` `,` `;` `\n`, удвоение внутренних кавычек), CRLF-переводы строк и UTF-8 BOM (Excel/Numbers открывают кириллицу корректно); `downloadCsv()` — скачивание через Blob + `<a download>`; `sanitizeFilenamePart()` — чистка фрагментов имени файла (кириллица сохраняется, `/\:` и пр. → `-`).
+- **Кнопка «⬇ CSV»** в ряду фильтров на `/profitability`: экспортирует ровно те строки, что видны в таблице — после серверных фильтров (марка/модель/город/годы/мин. объём/выборка) и текущей клиентской сортировки. Disabled при пустой таблице. Колонки: `#, Марка, Модель, Год, Покупка (p25), Продажа (медиана), Маржа %, Дней до продажи, Объём, Риск` — как в таблице, но «Модель» разбита на марку/модель, а числа сырые машиночитаемые (цены без «млн/К», маржа числом с 1 знаком, дни целым, риск словом низкий/средний/высокий).
+- Имя файла: `profitability_YYYY-MM-DD[_марка][_модель][_город][_годы][_все].csv` (`_все` — когда выключен junk-фильтр; годы — `2010-2015` / `от-2010` / `до-2015`).
+
+### Impact
+- Чисто клиентская фича: бэкенд и зависимости не тронуты, `output: 'export'` не затронут (First Load JS `/profitability` 118 kB). XLSX сознательно не делали (YAGNI — CSV открывается Excel'ем нативно благодаря BOM). Позже опционально гейтить за PRO.
+
+---
+
+## 2026-07-05 — Тёмная/светлая тема: переключатель + фикс шрифтовых токенов (t-0010)
+
+### Added
+- **Переключатель темы** в Topbar (кнопка ☾/☀ рядом с шестерёнкой) и в мобильном overlay-меню (`.mobile-theme-btn`, т.к. `.topbar-btn` на <640px скрыт). Сегмент «Тема» в панели Tweaks продолжает работать — состояние общее.
+- **`frontend/pages/_document.tsx`** (новый): инлайн-скрипт в `<head>` выставляет `data-theme` на `<html>` синхронно ДО первой отрисовки (в экспортированном HTML скрипт стоит раньше `<link rel="stylesheet">`) — «вспышки» темы (FOUC) нет. Приоритет: `localStorage['theme']` → `prefers-color-scheme` → dark; try/catch на случай отключённого localStorage. Заодно `<Html lang="ru">`.
+- **`frontend/hooks/useTheme.ts`** переписан на zustand-store (`useThemeStore`): раньше каждый вызов `useTheme()` держал собственный `useState`, и два потребителя (Topbar + Tweaks) рассинхронизировались бы. Начальное значение store читает из `data-theme` (его уже выставил скрипт `_document`); хук-обёртка `useTheme()` до mount отдаёт `'dark'` — совпадает с build-time HTML, hydration mismatch исключён.
+
+### Fixed
+- **Весь сайт рендерился системным serif (Times) вместо Inter/Space Grotesk/JetBrains Mono.** Причина: токены `--body/--display/--mono` объявлены на `:root` и резолвят `var(--font-*)` тоже на `:root`, а классы next/font с `--font-*` висели на wrapper-`<div>` внутри `body` — на `:root` переменные были не определены, вся цепочка становилась invalid at computed-value time. Фикс: `_app.tsx` инлайнит `<style>:root{--font-body:…;--font-display:…;--font-mono:…}</style>` через `next/head` (значения из `font.style.fontFamily`) — попадает в статический HTML, шрифты корректны с первого кадра.
+
+### Changed
+- **`PriceChart.tsx`**: все хардкод-цвета (`#7b8899`, `#6ea8ff`, `#22e0a1`, белая сетка `rgba(255,255,255,0.04)`) заменены на токены (`var(--text-muted)`, `var(--info)`, `var(--up)`, `var(--grid-line)`), градиенты — через `style={{stopColor}}`. График читается в обеих темах.
+- **`KZMapInner.tsx`**: тайлы CartoCDN переключаются `dark_*` ↔ `light_*` по теме (`key` пересоздаёт слой), фон контейнера `var(--bg-2)` вместо `#0a0c10`, цвет маркеров — `--up` соответствующей темы (Leaflet рисует SVG со своими inline-стилями, поэтому константы по теме, а не `var()`).
+- `globals.css`: светлый вариант фона мобильного overlay-меню (`[data-theme='light'] .mobile-nav-overlay`).
+- Остальные чарты (Heatmap — `color-mix` от токенов + готовый light-override текста ячеек, PriceCandles/BoxPlot — уже на `var(--*)`/нейтральной палитре, Funnel — midtone-цвета) проверены статически: читаемы в обеих темах, правки не требовались.
+
+### Impact
+- Тема переключается мгновенно, сохраняется между сессиями (`localStorage['theme']`), по умолчанию следует системной. `output: 'export'` не затронут — вся логика клиентская, скрипт статический. Типографика сайта впервые реально использует загружаемые next/font шрифты.
+
+---
+
+## 2026-07-05 — Sentry: трекинг ошибок backend + frontend (t-0006)
+
+### Added
+- **Backend:** `sentry-sdk[fastapi]==2.64.0` в `backend/requirements.txt`. Init в `backend/app/main.py` ДО создания `app` (чтобы FastAPI-интеграция обернула все middleware/handlers), настройки в `config.py`: `SENTRY_DSN` (default `""`), `SENTRY_TRACES_SAMPLE_RATE` (default `0.1`), `SENTRY_ENVIRONMENT` (default `production`), `send_default_pii=False`. Пустой DSN ⇒ `sentry_sdk` даже не импортируется — локалка и CI работают как раньше, ноль шума.
+- **Frontend:** `@sentry/browser` (^10.63.0), НЕ `@sentry/nextjs` — проект собирается с `output: 'export'` (нет серверного runtime), а `@sentry/nextjs` требует webpack-плагин + auth-токен для sourcemaps и генерирует бесполезные server/edge-конфиги. Клиентский init в `frontend/lib/sentry.ts`, вызывается module-level из `_app.tsx`; DSN — `NEXT_PUBLIC_SENTRY_DSN` (инлайнится на билде), `tracesSampleRate: 0.1`, `sendDefaultPii: false`. SDK подгружается **динамическим import'ом** в отдельный async-chunk (~110 kB gzip, после гидрации): статический import раздувал First Load JS каждой страницы с 86.4 до 133 kB, с динамическим — 87.7 kB (+1.3 kB glue).
+- Env-plumbing: `SENTRY_DSN` (backend) и `NEXT_PUBLIC_SENTRY_DSN` (frontend) в `render.yaml` (`sync: false` — значения только в Render dashboard) и `.env.example`. Секреты в репо не попадают.
+- Тесты: `backend/tests/test_sentry_init.py` (2 шт. — дефолты настроек, клиент неактивен при пустом DSN).
+
+### Impact
+- С пустым DSN оба приложения ведут себя ровно как раньше (проверено: import backend, `npm run build`, все тесты). Чтобы включить: владелец создаёт проекты в Sentry и прописывает DSN в Render env (backend: `SENTRY_DSN`, frontend: `NEXT_PUBLIC_SENTRY_DSN` + rebuild). Реальная доставка событий проверяется только с настоящим DSN.
+
+---
+
+## 2026-07-05 — Pool metrics: мониторинг утечек соединений к Neon (t-0015)
+
+### Added
+- **`parsers/common/db.py::pool_stats()`** — снимок метрик asyncpg-пула `{"size", "idle", "max"}` (`get_size()`/`get_idle_size()`/`get_max_size()`); возвращает `None` и никогда не бросает, если пул не инициализирован или интроспекция упала. **`log_pool_stats(prefix)`** — логирует `pool: size=X idle=Y max=Z` через module logger (no-op без пула).
+- **Единая точка end-of-run метрик:** `close_pool()` перед закрытием вызывает `log_pool_stats("close_pool:")` — покрывает все парсеры одним wiring-point'ом, без правок каждого парсера. Признак утечки в логах прогона: `size > idle` в момент закрытия.
+- **`backend/app/core/database.py::pool_stats()`** — та же интроспекция для backend-пула; `GET /health` теперь отдаёт `{"status":"ok","service":"automarket-api","pool":{"size":N,"idle":N,"max":N}}` (`pool: null` до `init_db`). Без запросов к БД — `/health` остаётся дешёвым (он исключён из rate-limiter'а).
+- Тесты: `tests/test_pool_stats.py` (6 шт. — None без исключений на неинициализированном пуле, счётчики на стабе, no-op `close_pool`), `backend/tests/test_health_pool.py` (2 шт. — форма `/health` со стабом `_pool`, без реальной БД).
+
+### Impact
+- Утечки соединений к Neon Pooler теперь видны: в логах каждого прогона парсеров — финальное состояние пула, у backend — живой снимок через `/health`. `statement_cache_size=0` и параметры подключения не тронуты.
+
+---
+
+## 2026-07-05 — CityNormalizer как модуль + аудит пропущенных брендов (t-0014)
+
+### Added
+- **`parsers/common/city_normalizer.py`** — единая нормализация городов, вынесена из `parsers/common/db.py::_normalize_city`. Пайплайн `normalize_city()`: trim + схлопывание пробелов → срез суффикса `" - ..."` (пробел ПЕРЕД дефисом обязателен, `\s+-` — паттерн `\s*-\s*` без обязательных пробелов однажды испортил 18,481 `ust-kamenogorsk` → `ust`) → alias-lookup по casefold → безопасный slugify-fallback (никогда не усекает по дефису). Alias-карта расширена ~30 вариантами: латинские транслиты и казахские названия (`Aqtau`/`Ақтау` → `aktau`, `Oskemen`/`Өскемен` → `ust-kamenogorsk`, `Nur-Sultan`/`Нұр-Сұлтан` → `astana`, `Семипалатинск` → `semey`, `Чимкент`/`Chimkent` → `shymkent`, `Гурьев` → `atyrau`, `Джамбул` → `taraz`, `Qostanay` → `kostanai` и т.д.). Выходная конвенция та же, что уже в БД: latin slug в нижнем регистре.
+- **`parsers/common/audit_brands.py`** — read-only аудит покрытия брендов kolesa-фидами: активные бренды с > N объявлений (default 100, `--threshold`; фильтр по `source_id` через подзапрос к `sources`, НЕ по тексту) сверяются с фактическими `BRAND_FEEDS` + брендами из `MODEL_FEEDS` + `CITY_BRAND_TOP_BRANDS`, импортируемыми из `parsers.kolesa.parser`. Печатает бренды-кандидаты без своего фида по убыванию count + готовую строку для вставки в `BRAND_FEEDS`. Запуск владельцем при доступном `DATABASE_URL`: `DATABASE_URL=... python -m parsers.common.audit_brands`. Живой прогон в этой задаче не выполнялся (нет доступа к prod-БД) — выводы по конкретным брендам не фиксировались.
+- **`parsers/common/city_dry_run.py`** — read-only dry-run нормализации по существующим данным: печатает все DISTINCT `listings.city`, где `normalize_city(old) != old`, с количеством строк (old → new). Обязательный шаг перед любым bulk-UPDATE городов (правило CLAUDE.md); решение об UPDATE принимает владелец по отчёту.
+- **`tests/test_city_normalizer.py`** — 39 юнит-тестов: регресс инцидента `ust-kamenogorsk` (дефисы внутри слов неприкосновенны, суффикс режется только с пробелом перед дефисом), alias-варианты (кириллица RU/KZ, транслиты, исторические имена), идемпотентность canonical slug'ов (каждое значение карты — неподвижная точка), регистр/пробелы, неизвестные города, None/""/"0".
+
+### Changed
+- **`parsers/common/db.py`** — `_CITY_NORMALIZATIONS` и `_normalize_city` удалены, `save_listing` вызывает `normalize_city` из нового модуля. Центральная точка не изменилась: города ВСЕХ парсеров (kolesa/mycar/olx/newauto/avtorynok) по-прежнему нормализуются в `save_listing` перед вставкой.
+- **`parsers/kolesa/parser.py`** — дублирующая inline-логика города (`strip().lower()` + локальный `CITY_ALIASES = {"semei": "semey"}`) заменена вызовом `normalize_city()` (поведение эквивалентно: алиас `semei` есть в общей карте).
+- **Осознанное изменение поведения (только для НОВЫХ записей):** неизвестные города раньше сохранялись как есть (`"Зайсан"`, `"Some Town"`), теперь проходят безопасный slugify — casefold + пробелы → дефис (`"зайсан"`, `"some-town"`); кириллица без алиаса остаётся кириллицей (транслитерации «наугад» нет). Известные alias-города и canonical slug'и — без изменений.
+
+### Impact
+- **Данные в БД НЕ трогались** — никаких UPDATE в этой задаче; существующие строки с «сырыми» неизвестными городами останутся как есть, пока владелец не посмотрит отчёт `city_dry_run` и не решит про bulk-UPDATE вручную.
+- Аудит брендов: владельцу запустить `python -m parsers.common.audit_brands` (read-only) при доступном `DATABASE_URL` — получит список популярных брендов без фида, теряющих покрытие из-за 5000-лимита kolesa (Daewoo уже добавлен ранее).
+- Транслит-варианты (`Aqtau`, `Oskemen`, `Nur-Sultan` и т.д.) теперь не плодят отдельные значения city — попадают в canonical slug и корректно матчатся картой/фильтрами.
+
+---
+
+## 2026-07-05 — Smart-thresholds: алерт при тихой деградации парсера (t-0009)
+
+### Added
+- **`parsers/common/run_stats.py`** — детектор «тихой деградации»: после каждого прогона метрики (`saved`, `new_count`) пишутся в новую таблицу `parser_runs` и сравниваются с последним **успешным** прогоном той же гранулярности `(source_id, shard_index, shard_count)` — шардовые прогоны kolesa (3 шарда) сравниваются только с таким же шардом, а не с полным прогоном. Падение любой метрики больше чем на `PARSER_ALERT_DROP_PCT`% (env, default 50) → **один** ⚠️-алерт в Telegram через существующий `notifier.send_telegram_message` и запись прогона со `status='degraded'` (деградировавший прогон baseline НЕ понижает — следующее сравнение снова идёт с последним «хорошим»). Baseline ниже шумового порога `PARSER_ALERT_MIN_BASE` (env, default 100) не сравнивается — мелкие фиды не алертят ложно. Решающая функция `evaluate_degradation()` чистая (без БД/сети) и покрыта юнит-тестами.
+- **`database/migrations/003_parser_runs.sql`** (+ зеркало в `database/init.sql`) — таблица `parser_runs(id, source_id FK→sources, shard_index, shard_count, saved, new_count, active_after NULL, status ok|degraded, finished_at)` + индекс под выборку baseline. Применить вручную в Neon SQL Editor; до применения мониторинг молча пропускается (warning в логах), прогоны не страдают.
+- **`tests/test_run_stats.py`** — 12 юнит-тестов `evaluate_degradation`: падение ниже порога → алерт; нормальный прогон/рост → молчание; нет baseline → молчание; baseline ниже шумового порога → молчание; prev=0 без ZeroDivisionError; обе метрики в одном алерте; кастомный порог.
+
+### Changed
+- **`parsers/kolesa/parser.py`** — в `__main__` после прогона (кроме ip_blocked — прерванные прогоны не записываются, о них уже сигналят exit 1 и 🔴) вызывается `record_and_alert("kolesa", total, total_new, shard_index=…, shard_count=…)`. Partial-прогоны (exit 10) записываются как обычные: их статус определяет только сравнение с baseline — partial с просадкой меньше порога станет новым baseline.
+- **`parsers/{mycar,olx,newauto,avtorynok}/parser.py`** — по одной строке в `__main__` после `send_success`: `record_and_alert(<source>, total, total_new)`.
+
+### Impact
+- Тихая поломка селекторов или частичный бан при exit 0 (ровно так молча ломался OLX до фикса 2026-05-02) теперь ловится в первый же прогон: «⚠️ Деградация парсера kolesa[1/3]: saved 1,200 vs 5,400 (-78%) в прошлом успешном прогоне (порог 50%)».
+- Мониторинг полностью best-effort: любой его сбой (нет таблицы, нет сети, нет Telegram-кредов) — warning в лог, exit code и данные прогона не затрагиваются.
+- Новые env: `PARSER_ALERT_DROP_PCT` (default 50), `PARSER_ALERT_MIN_BASE` (default 100) — менять в workflow env при необходимости, секретов не требуют.
+
+---
+
+## 2026-07-05 — Раздел /articles: SEO-блог на markdown со статическим экспортом (t-0008)
+
+### Added
+- **`frontend/content/articles/*.md`** — файловый контент блога: плоский frontmatter (`title`, `description`, `date`) + markdown-тело; slug статьи = имя файла. Первая статья — «Как меняются цены на авто в Казахстане: что показывают данные» (вводная про источники данных и insights-эндпоинты t-0007).
+- **`frontend/lib/articles.ts`** — build-time контент-пайплайн: ручной парсер frontmatter (~20 строк вместо gray-matter — нужны только плоские `key: value`) + рендер markdown через `marked`. Используется ТОЛЬКО из `getStaticProps`/`getStaticPaths` (node:fs), в клиентский бандл не попадает (проверено: `marked` отсутствует в chunks).
+- **`frontend/pages/articles/index.tsx`** — список статей (свежие первыми), `getStaticProps`.
+- **`frontend/pages/articles/[slug].tsx`** — страница статьи. **Архитектурный выбор:** `getStaticPaths` + `getStaticProps` (`fallback: false`), а НЕ query-string `/articles/view?slug=…`. Оба совместимы с `output: 'export'`, но SEO-статьям нужны реальные отдельные URL: у query-string-страницы один canonical на все статьи, что убивает индексацию; все пути известны на билде из файлов. На странице: canonical + og:* (`og:type=article`, `article:published_time`) через `<Seo/>` + JSON-LD `Article` (headline, datePublished, author/publisher Organization).
+- **CSS** — блок `.article-*` в `globals.css` (карточки списка + читабельная типографика тела статьи), без новых CSS-фреймворков.
+- **Зависимость:** `marked` ^12 (единственная новая; MDX-тулчейн `@next/mdx`/`next-mdx-remote` отклонён как избыточный — компоненты в тексте статей не нужны).
+
+### Changed
+- **`frontend/components/Seo.tsx`** — новые опциональные пропсы `ogType` (`website`|`article`, default `website`) и `publishedTime` → `article:published_time`. Отдельный Article-компонент не заводился сознательно (расширение вместо дублирования).
+- **`frontend/components/layout/Topbar.tsx`** — пункт «Статьи» в NAV (desktop + mobile меню используют один массив).
+- **`frontend/scripts/gen-sitemap.mjs`** — раскомментирован `/articles` + автоглоб `content/articles/*.md`: каждая статья попадает в sitemap как `/articles/<slug>` c `lastmod` из frontmatter-даты (для статей lastmod семантически честен, в отличие от «даты билда» у остальных страниц). Скрипт остался dependency-free (node:fs), мини-парсер frontmatter продублирован с пометкой.
+- **README** — структура проекта (`content/`, `pages/articles/`, `lib/articles.ts`), уточнена заметка про dynamic routes: `[param]`-папки допустимы при путях, известных на билде.
+
+### Impact
+- Новая статья = один `.md`-файл в `content/articles/` — страница, список, навигация и sitemap подхватываются автоматически на билде, без кода. `npm run build` проходит; `out/articles.html` и `out/articles/<slug>.html` генерируются статически (12 страниц, SSR/ISR не используется, `getServerSideProps` в проекте нет).
+
+### Added
+- **`backend/app/api/v1/endpoints/insights.py`** — новая группа публичных эндпоинтов `/api/v1/analytics/insights/*` (отдельный модуль, чтобы не раздувать analytics.py — тот уже 2000+ строк):
+  - `price-drop-leaders` — топ моделей по падению медианной цены за `period_days` (90|180|365). Метод: медиана `price_kzt` в 14-дневном окне начала периода vs последние 14 дней, JOIN brands+models, порог `min_samples` (default 20) объявлений в каждом окне против шума малых выборок. Возвращает только реально подешевевшие модели.
+  - `seasonality` — avg + median цены по календарным месяцам за всю историю `price_history` (глобально или `brand_id`), плюс сезонная агрегация (winter/spring/summer/autumn, взвешенно по числу наблюдений).
+  - `brand-volatility` — метрика «кто держит цену»: coefficient of variation (sample stddev / mean, %) МЕСЯЧНЫХ МЕДИАН цены бренда за период. Медиана гасит выбросы, CV нормирует на уровень цен (Toyota сравнима с Lada). Месяцы с < `min_listings_per_month` объявлений исключаются. `order=stable|volatile`.
+  - `price-buckets` — гистограмма ТЕКУЩИХ цен активных объявлений (latest-price CTE как в `/summary`) по корзинам `bucket_size_kzt` (default 2 млн) с overflow-корзиной выше `max_price_kzt` (default 20 млн); counts + share_pct.
+  - Все ответы несут `meta.method` — статьи могут цитировать методику, не залезая в код.
+- **In-memory TTL-кеш** (класс `TTLCache` в insights.py): default 1 час, env `INSIGHTS_CACHE_TTL_SEC`. Выбран вместо materialized view: один инстанс на Render free-tier, ноль зависимостей, не нужны миграция и оркестрация REFRESH. `maxsize=256` с выселением истёкших/ближайших к истечению — защита памяти от перебора параметров.
+- **`backend/tests/test_insights_cache.py`** — 7 pytest'ов на TTLCache (hit/miss/expiry/refresh/eviction) без БД, время инъектируется параметром `now`.
+
+### Changed
+- **`backend/app/core/rate_limit.py`** — `/analytics/insights/` добавлен в `HEAVY_SEGMENTS` (20/minute). Обоснование: TTL-кеш защищает только от повторов одинаковых запросов; перебор `brand_id`/`period_days` генерирует cache-miss'ы и бьёт по БД напрямую — heavy-лимит закрывает этот вектор. Для легитимных статей 20/min с избытком (4 запроса на страницу). Тест `test_insights_paths_are_heavy` добавлен в test_rate_limit.py.
+- **`backend/app/core/config.py`** — новая настройка `INSIGHTS_CACHE_TTL_SEC` (default 3600).
+- **`backend/app/api/v1/router.py`** — подключён `insights.router`.
+- **README** — секция «Инсайты для статей» в §API, env-переменная, структура проекта, heavy-список rate limiting.
+
+### Impact
+- Контент-страницы могут пуллить живые цифры («модель X подешевела на N% за 90 дней», «Toyota — волатильность M%») вместо хардкода в текст. Первый запрос после деплоя/истечения TTL платит полную цену SQL (сотни мс на full-scan price_history), дальше — из памяти. Схема БД не менялась.
+
+---
+
+## 2026-07-05 — Rate limiting на публичные API endpoints (t-0005)
+
+### Added
+- **`backend/app/core/rate_limit.py`** — собственный in-memory rate limiter (pure-ASGI middleware, fixed window, per-IP), **без новых зависимостей** (slowapi не нужен: один инстанс на Render free-tier, shared-состояние избыточно). Два класса лимитов: глобальный `120/minute` на все `/api/*` (env `RATE_LIMIT_GLOBAL`) и строгий `20/minute` (env `RATE_LIMIT_HEAVY`) на тяжёлые SQL-эндпоинты — `/profit-ranking`, `/profitability`, `/backtest`, `/forecast` (heavy-запросы считаются и в глобальном окне). Выключатель `RATE_LIMIT_ENABLED` (default `true`). Формат лимитов: `"N/second|minute|hour|day"`.
+- **429-ответ:** JSON `{detail, retry_after_seconds}` + заголовок `Retry-After` (секунды до сброса окна, округление вверх, минимум 1).
+- **Определение клиента за прокси Render:** leftmost-IP из `X-Forwarded-For`, fallback — peer address. Без этого все пользователи делили бы IP прокси и лимитер наказывал бы всех сразу.
+- **Исключения:** `/health`, `/api/docs`, `/api/redoc`, `/openapi.json`, все OPTIONS (CORS preflight) и пути вне `/api/`.
+- **`backend/tests/test_rate_limit.py`** — 9 pytest'ов на минимальном FastAPI-приложении без БД: N проходит / N+1 → 429 c `Retry-After`; heavy строже global; heavy считается в global; `/health` не лимитируется; `X-Forwarded-For` разделяет клиентов; OPTIONS не лимитируется; выключатель; сброс окна; парсер формата.
+
+### Changed
+- **`backend/app/main.py`** — `RateLimitMiddleware` подключён ДО `CORSMiddleware` (в Starlette последний `add_middleware` — внешний), поэтому CORS оборачивает лимитер и 429-ответы тоже получают CORS-заголовки — браузер может прочитать ошибку.
+- **`backend/app/core/config.py`** — новые настройки `RATE_LIMIT_ENABLED`, `RATE_LIMIT_GLOBAL`, `RATE_LIMIT_HEAVY`.
+
+### Trade-offs (осознанные)
+- Fixed window (не sliding): на границе окна возможен burst до 2× лимита — для защиты тяжёлых SQL от долбёжки достаточно.
+- Состояние в памяти процесса: сбрасывается при рестарте, при нескольких инстансах каждый считает независимо (сейчас инстанс один). Защита от роста памяти — prune истёкших окон при 10k+ бакетов.
+
+### Impact
+- Самый тяжёлый публичный эндпоинт `/api/v1/analytics/profit-ranking` больше нельзя безнаказанно долбить: 21-й запрос за минуту с одного IP получает 429. Обычная навигация по дашборду (~10–20 запросов на загрузку страницы) в лимиты не упирается. Новых зависимостей нет, переменные на Render по умолчанию задавать не нужно.
+
+---
+
+## 2026-07-05 — Холодная архивация: inactive >30d → listings_archive (t-0003)
+
+### Added
+- **`database/migrations/002_listings_archive.sql`** — холодные таблицы `listings_archive` (зеркало `listings` + `archived_at`) и `price_history_archive` (зеркало `price_history` + `archived_at`). Явный список колонок (не `LIKE listings`) — схема архива зафиксирована и не зависит от будущих `ALTER TABLE listings`. Без FK на горячие таблицы (архив холодный, `brand_id`/`source_id` — обычные числа). Индексы минимальные: PK + `archived_at` + `price_history_archive(listing_id)` — больше не добавляем, индексы едят то хранилище, ради которого архив заведён. Idempotent (`IF NOT EXISTS`), применять вручную в Neon SQL Editor. Таблицы также добавлены в `database/init.sql` (schema contract).
+- **`parsers/common/archive_old.py`** — переносит `is_active=FALSE AND last_seen_at < NOW() - ARCHIVE_THRESHOLD_DAYS` (default 30) в архив пачками по `ARCHIVE_BATCH` (default 5000): в ОДНОЙ транзакции на пачку — `INSERT` в оба архива (`ON CONFLICT DO NOTHING`) + `DELETE FROM listings` (`FOR UPDATE SKIP LOCKED` — не дедлочимся с парсерами). **`ARCHIVE_DRY_RUN=1` по умолчанию** — печатает план (COUNT + разбивка по source через JOIN sources + число строк price_history) и ничего не пишет; план печатается и перед реальным прогоном (правило bulk-SQL из CLAUDE.md). Идемпотентно: повторный прогон архивирует 0. Защита: `ARCHIVE_THRESHOLD_DAYS < 7` → отказ (моложе deactivate-порога 168h — риск ложно-мёртвых).
+- **`.github/workflows/archive.yml`** — еженедельно (вс 02:45 UTC, тихий слот между kolesa_full/daily/alive) + `workflow_dispatch` (inputs: `dry_run`, `threshold_days`). Cron остаётся в dry-run, пока владелец не установит **repo variable `ARCHIVE_DRY_RUN=0`** после ревью плана.
+
+### Решение по price_history (FK)
+- `price_history.listing_id REFERENCES listings(id) ON DELETE CASCADE` — простой DELETE молча уничтожил бы историю цен, а именно в ней аналитическая ценность (тренды, forecast, backtest). Поэтому **price_history архивируется вместе с listing** в `price_history_archive` в той же транзакции, ДО DELETE (каскад после этого удаляет уже скопированные строки). Альтернатива «оставить строки» невозможна без снятия FK, «удалить» — потеря данных.
+
+### Impact
+- Горячая `listings` (285k+ строк) перестаёт монотонно расти — давно-мёртвые объявления уезжают в холодные таблицы, отодвигая лимит Neon free tier (~512 MB). История сохраняется полностью (архив читается обычным SQL/UNION при необходимости).
+- **Деплой:** (1) применить миграцию `002` в Neon SQL Editor; (2) запустить workflow вручную с `dry_run=1`, посмотреть план; (3) запустить с `dry_run=0` (первый перенос); (4) установить repo variable `ARCHIVE_DRY_RUN=0`, чтобы еженедельный cron работал по-настоящему.
+
+---
+
+## 2026-07-05 — SEO-фундамент: robots.txt + sitemap.xml + canonical/OG meta (t-0002)
+
+### Added
+- **`frontend/scripts/gen-sitemap.mjs`** — генератор `public/robots.txt` + `public/sitemap.xml`, подключён через npm `prebuild` (совместимо с `output: 'export'` — файлы попадают в `out/` как статика). Базовый URL из env `NEXT_PUBLIC_SITE_URL`. Оба файла — build-артефакты: в git не коммитятся (добавлены в `.gitignore`), генерируются при каждом билде (локально и на Render). До этого папки `public/` не было вообще — сайт был не готов к индексации.
+- **robots.txt** (генерируемый): `Allow: /`, `Disallow: /auth/`, ссылка на `Sitemap`.
+- **sitemap.xml** (генерируемый): 4 индексируемые страницы — `/`, `/brands`, `/profitability`, `/forecast`; без `<lastmod>` (опционален по спецификации, а «дата билда» была бы враньём). `/listing` и `/model` не включены (query-string детальные страницы), `/auth/*` исключён. `/articles` добавится в t-0008 (одна строка в `ROUTES`).
+- **`frontend/components/Seo.tsx`** — ручной `next/head` без новых зависимостей: `<title>`, description, canonical, `og:title/description/url/site_name/locale/type`, `twitter:card`. `og:image` опционален (картинки пока нет). Подключён на `/`, `/brands`, `/profitability`, `/forecast` с русскими title/description.
+- **env `NEXT_PUBLIC_SITE_URL`** — публичный URL фронта (добавлен в `.env.example`, `render.yaml`, README). Fallback в коде — `https://kolesa-frontend.onrender.com` (дефолтный домен Render static-сайта `kolesa-frontend`; реальный прод-домен в репо нигде не зафиксирован — при появлении кастомного домена задать env в Render).
+
+### Changed
+- Страницы `/brands`, `/profitability`, `/forecast` получили содержательные title/description вместо голого `<title>`.
+
+### Impact
+- Фронт готов к индексации поисковиками — фундамент для контент-стратегии (BACKLOG §Контент-маркетинг, t-0008). `npm run build` проходит, `out/` содержит сгенерированные robots.txt и sitemap.xml, на всех основных страницах в `<head>` есть canonical и og:*.
+
+---
 ## 2026-07-05 — QA-спринт: 16 багов из полного UI-прохода (t-0019…t-0034) (cbf6b5d)
 
 ### Fixed (critical)

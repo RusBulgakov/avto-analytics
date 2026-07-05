@@ -4,15 +4,18 @@
     "private": true,
     "scripts": {
         "dev": "next dev",
+        "prebuild": "node scripts/gen-sitemap.mjs",
         "build": "next build",
         "start": "next start"
     },
     "dependencies": {
+        "@sentry/browser": "^10.63.0",
         "@types/leaflet": "^1.9.12",
         "axios": "^1.6.7",
         "date-fns": "^3.6.0",
         "framer-motion": "^11.0.25",
         "leaflet": "^1.9.4",
+        "marked": "^12.0.2",
         "next": "14.1.4",
         "react": "18.2.0",
         "react-dom": "18.2.0",

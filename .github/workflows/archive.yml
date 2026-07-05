@@ -1,0 +1,62 @@
+name: Archive Old Listings
+
+# Холодная архивация: is_active=FALSE + last_seen_at старше 30 дней
+# переносятся из listings (+их price_history) в listings_archive /
+# price_history_archive и удаляются из горячих таблиц. Спасает Neon
+# free tier (~512 MB) от распухания. См. parsers/common/archive_old.py
+# и database/migrations/002_listings_archive.sql.
+#
+# БЕЗОПАСНО ПО УМОЛЧАНИЮ: и cron, и ручной запуск идут в dry-run
+# (только печать плана, записи нет), пока владелец не посмотрит план
+# и не установит repo variable ARCHIVE_DRY_RUN=0
+# (Settings → Secrets and variables → Actions → Variables).
+
+on:
+  schedule:
+    # Раз в неделю, вс 02:45 UTC — тихий слот: kolesa_full (20:00) уже
+    # завершился (hard-cap 350 мин → до ~01:50), daily/alive прошли в
+    # 00:00/00:30, следующие в 06:00/06:30. Идущий параллельно liveness
+    # (01:15) — HTTP-bound, БД почти не грузит; FOR UPDATE SKIP LOCKED
+    # в скрипте исключает взаимные блокировки.
+    - cron: '45 2 * * 0'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry-run: только план, без записи (0 = реальный перенос)'
+        required: false
+        default: '1'
+      threshold_days:
+        description: 'Порог "давно неактивен", дней'
+        required: false
+        default: '30'
+
+concurrency:
+  group: archive-old
+  cancel-in-progress: false   # не убиваем — ждём в очереди
+
+env:
+  PYTHONPATH: ${{ github.workspace }}
+
+jobs:
+  archive:
+    name: Archive inactive listings
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: parsers/requirements.txt
+      - name: Install dependencies
+        run: pip install -r parsers/requirements.txt
+      - name: Run archive
+        run: python -m parsers.common.archive_old
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          # Приоритет: input ручного запуска → repo variable → '1' (dry-run).
+          # Cron не передаёт inputs → управляется переменной ARCHIVE_DRY_RUN.
+          ARCHIVE_DRY_RUN: ${{ github.event.inputs.dry_run || vars.ARCHIVE_DRY_RUN || '1' }}
+          ARCHIVE_THRESHOLD_DAYS: ${{ github.event.inputs.threshold_days || '30' }}
+          ARCHIVE_BATCH: '5000'

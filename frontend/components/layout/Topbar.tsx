@@ -6,6 +6,7 @@ import useSWR from 'swr';
 import { analyticsApi, authApi } from '@/lib/api';
 import { fmt } from '@/lib/format';
 import { useUsdKzt } from '@/hooks/useUsdKzt';
+import { useTheme } from '@/hooks/useTheme';
 import Tweaks from './Tweaks';
 import SearchPalette from './SearchPalette';
 
@@ -20,12 +21,15 @@ const NAV = [
     { href: '/brands', label: 'Марки', match: (p: string) => p.startsWith('/brand') || p.startsWith('/model') },
     { href: '/profitability', label: 'Рентабельность', match: (p: string) => p.startsWith('/profit') },
     { href: '/forecast', label: 'Прогноз', match: (p: string) => p.startsWith('/forecast') },
+    { href: '/articles', label: 'Статьи', match: (p: string) => p.startsWith('/articles') },
 ];
 
 export default function Topbar() {
     const router = useRouter();
     const [tweaksOpen, setTweaksOpen] = useState(false);
     const [mobileNavOpen, setMobileNavOpen] = useState(false);
+    const [theme, setTheme] = useTheme();
+    const toggleTheme = () => setTheme(theme === 'dark' ? 'light' : 'dark');
     const [searchOpen, setSearchOpen] = useState(false);
     const [userMenuOpen, setUserMenuOpen] = useState(false);
 
@@ -179,6 +183,19 @@ export default function Topbar() {
                     <span className="kbd">⌘K</span>
                 </button>
 
+                {/* Тема: ☾ в тёмной (клик → светлая), ☀ в светлой (клик → тёмная).
+                    useTheme до mount отдаёт 'dark' — иконка совпадает с SSG-HTML,
+                    hydration mismatch нет. */}
+                <button
+                    className="topbar-btn"
+                    type="button"
+                    onClick={toggleTheme}
+                    aria-label={theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему'}
+                    title="Переключить тему"
+                >
+                    <span aria-hidden>{theme === 'dark' ? '☾' : '☀'}</span>
+                </button>
+
                 {token ? (
                     <button
                         className="topbar-btn"
@@ -239,6 +256,17 @@ export default function Topbar() {
                             </Link>
                         ))}
                     </nav>
+
+                    {/* Переключатель темы в мобильном меню — .topbar-btn на <640 скрыт */}
+                    <button
+                        className="mobile-theme-btn"
+                        type="button"
+                        onClick={toggleTheme}
+                        aria-label={theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему'}
+                    >
+                        <span aria-hidden>{theme === 'dark' ? '☾' : '☀'}</span>
+                        <span>Тема: {theme === 'dark' ? 'тёмная' : 'светлая'}</span>
+                    </button>
                 </div>
             )}
 

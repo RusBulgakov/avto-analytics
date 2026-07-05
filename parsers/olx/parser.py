@@ -353,11 +353,14 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     import time
     from parsers.common.notifier import send_success, send_error
+    from parsers.common.run_stats import record_and_alert
     
     start = time.time()
     try:
         total, total_new = asyncio.run(run_parser())
         asyncio.run(send_success("olx", total, start, time.time(), total_new))
+        # Smart-thresholds: запись метрик + алерт при тихой деградации (best-effort)
+        asyncio.run(record_and_alert("olx", total, total_new))
     except Exception as e:
         logger.exception("Парсер olx упал")
         asyncio.run(send_error("olx", e))

@@ -20,6 +20,8 @@ from typing import Optional
 
 from parsers.common.http_client import fetch, IPBlockedError
 from parsers.common.db import get_pool, save_listing
+from parsers.common.city_normalizer import normalize_city
+from parsers.kolesa import early_stop
 
 logger = logging.getLogger("parser.kolesa")
 
@@ -361,14 +363,9 @@ def _parse_item(obj: dict) -> Optional[dict]:
 
         price_kzt = obj.get("unitPrice")
 
-        # Город — нормализация: "0" → None, "semei" → "semey"
-        city = obj.get("city")
-        if city in ("0", "", None):
-            city = None
-        elif isinstance(city, str):
-            city = city.strip().lower()
-            CITY_ALIASES = {"semei": "semey"}
-            city = CITY_ALIASES.get(city, city)
+        # Город — единая нормализация (parsers/common/city_normalizer):
+        # "0"/"" → None, "semei" → "semey", алиас → canonical latin slug
+        city = normalize_city(obj.get("city"))
 
         region = obj.get("region")
 
@@ -465,11 +462,46 @@ async def parse_city(city: str, session, pool, progress: Optional[dict] = None) 
     MAX_CONSECUTIVE_ERRORS = 5  # >5 подряд = интернет лежит, нет смысла продолжать
     if progress is not None:
         progress['active_feeds'].add(city)
-    for page in range(1, MAX_PAGES_PER_CITY + 1):
+
+    # ── Phase 2 (t-0017): newest-first + early-stop + курсор — ВСЁ ТОЛЬКО при
+    # KOLESA_EARLY_STOP=1. Default 0 → es_enabled=False → ни одна ветка ниже
+    # не активна, поведение фида байт-в-байт как раньше.
+    # ОПАСНО включать, пока liveness-sweep не работает (t-0016) — глубокие
+    # страницы перестанут получать last_seen_at и 168h-deactivate их убьёт.
+    # Подробности: parsers/kolesa/early_stop.py (докстринг модуля).
+    es_enabled = early_stop.early_stop_enabled()
+    tracker = early_stop.EarlyStopTracker(
+        enabled=es_enabled, threshold=early_stop.early_stop_pages(),
+    )
+    sort_query = ""
+    cycle = ""
+    start_page = 1
+    if es_enabled:
+        sort_query = early_stop.sort_param()
+        cycle = early_stop.cycle_id()
+        try:
+            async with pool.acquire() as conn:
+                start_page = await early_stop.load_cursor(conn, "kolesa", city, cycle) + 1
+        except Exception as e:
+            logger.warning(
+                "kolesa %s: не удалось прочитать parse_cursor (%s) — старт с 1-й страницы",
+                city, e,
+            )
+            start_page = 1
+        if start_page > 1:
+            logger.info(
+                "kolesa %s: цикл %s — продолжаем со страницы %d (parse_cursor)",
+                city, cycle, start_page,
+            )
+
+    for page in range(start_page, MAX_PAGES_PER_CITY + 1):
         if city == "all":
             url = f"{BASE_URL}/cars/" if page == 1 else f"{BASE_URL}/cars/?page={page}"
         else:
             url = f"{BASE_URL}/cars/{city}/" if page == 1 else f"{BASE_URL}/cars/{city}/?page={page}"
+        if es_enabled and sort_query:
+            # Сортировка «свежие первыми» — только под флагом (см. выше)
+            url += ("&" if "?" in url else "?") + sort_query
 
         try:
             # use_proxy=False: бесплатные прокси блокируются kolesa и добавляют
@@ -546,6 +578,22 @@ async def parse_city(city: str, session, pool, progress: Optional[dict] = None) 
             progress['pages_done'] = progress.get('pages_done', 0) + 1
             progress['total_saved'] = progress.get('total_saved', 0) + page_saved
             progress['total_new'] = progress.get('total_new', 0) + page_new
+
+        # ── Phase 2 (t-0017), только при KOLESA_EARLY_STOP=1: записываем курсор
+        # после обработанной страницы (best-effort) и проверяем early-stop.
+        # «Новый» = is_new из save_listing (INSERT, объявления не было в БД).
+        if es_enabled:
+            try:
+                async with pool.acquire() as conn:
+                    await early_stop.save_cursor(conn, "kolesa", city, page, cycle)
+            except Exception as e:
+                logger.warning("kolesa %s: не удалось записать parse_cursor: %s", city, e)
+            if tracker.record_page(page_new):
+                logger.info(
+                    "kolesa %s стр %d: early-stop — %d подряд страниц без новых объявлений",
+                    city, page, tracker.consecutive_zero_pages,
+                )
+                break
 
         await asyncio.sleep(random.uniform(2.0, 4.0))
 
@@ -923,6 +971,20 @@ if __name__ == "__main__":
         logger.exception("Парсер kolesa упал")
         asyncio.run(send_error(source_tag, e))
         sys.exit(2)
+
+    # ── Smart-thresholds: запись метрик прогона + алерт при тихой деградации ──
+    # ip_blocked-прогоны не записываем: они прерваны на середине, сравнивать
+    # их не с чем, и об IP-блоке уже сигналят exit 1 и 🔴 в Telegram.
+    # Partial-прогоны (exit 10) записываются как обычные: status определяет
+    # только сравнение с baseline (PARSER_ALERT_DROP_PCT); partial с просадкой
+    # меньше порога запишется как 'ok' и станет новым baseline.
+    # record_and_alert best-effort — прогон не уронит.
+    if not ip_blocked:
+        from parsers.common.run_stats import record_and_alert
+        asyncio.run(record_and_alert(
+            "kolesa", total, total_new,
+            shard_index=_shard_index, shard_count=_shard_count,
+        ))
 
     # ── Анализ результата ──
     if ip_blocked:

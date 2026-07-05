@@ -143,6 +143,111 @@ CREATE INDEX idx_price_history_listing ON price_history(listing_id);
 CREATE INDEX idx_price_history_recorded_at ON price_history(recorded_at);
 
 -- =============================================
+-- ХОЛОДНЫЙ АРХИВ
+-- =============================================
+-- Давно-неактивные объявления (is_active=FALSE, last_seen_at старше
+-- ARCHIVE_THRESHOLD_DAYS, default 30) переносятся сюда из listings
+-- скриптом parsers/common/archive_old.py (workflow archive.yml),
+-- чтобы горячая таблица не упиралась в лимит Neon free tier (~512 MB).
+-- Зеркала listings/price_history + archived_at. Без FK на горячие
+-- таблицы (архив холодный, id остаются обычными числами) и с
+-- минимумом индексов (индексы едят хранилище, ради которого архив
+-- и заведён). Полные комментарии к дизайну —
+-- database/migrations/002_listings_archive.sql.
+
+CREATE TABLE IF NOT EXISTS listings_archive (
+    id                  UUID PRIMARY KEY,          -- исходный id из listings
+    source_id           INT NOT NULL,
+    external_id         VARCHAR(255) NOT NULL,
+    brand_id            INT,
+    model_id            INT,
+    title               TEXT,
+    year                SMALLINT,
+    mileage_km          INT,
+    engine_volume_cc    INT,
+    engine_power_hp     SMALLINT,
+    body_type_id        INT,
+    fuel_type_id        INT,
+    transmission_id     INT,
+    drive_type_id       INT,
+    color               VARCHAR(50),
+    city                VARCHAR(100),
+    region              VARCHAR(100),
+    condition           VARCHAR(20),
+    listing_url         TEXT,
+    is_active           BOOLEAN,
+    first_seen_at       TIMESTAMPTZ,
+    last_seen_at        TIMESTAMPTZ,
+    closed_at           TIMESTAMPTZ,
+    last_checked_at     TIMESTAMPTZ,
+    is_emergency        BOOLEAN,
+    is_customs_cleared  BOOLEAN,
+    flags_updated_at    TIMESTAMPTZ,
+    is_in_stock         BOOLEAN,
+    archived_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_listings_archive_archived_at
+    ON listings_archive (archived_at);
+
+CREATE TABLE IF NOT EXISTS price_history_archive (
+    id          BIGINT PRIMARY KEY,     -- исходный id из price_history
+    listing_id  UUID NOT NULL,          -- без FK: listings_archive холодный
+    price_kzt   BIGINT NOT NULL,
+    price_usd   INT,
+    recorded_at TIMESTAMPTZ,
+    archived_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_price_history_archive_listing
+    ON price_history_archive (listing_id);
+
+-- =============================================
+-- МОНИТОРИНГ ПАРСЕРОВ (миграция 003)
+-- =============================================
+-- История метрик прогонов для детекции «тихой деградации» (exit 0, но
+-- saved/new упали ниже порога PARSER_ALERT_DROP_PCT). Пишется и читается
+-- parsers/common/run_stats.py. Гранулярность (source_id, shard_index,
+-- shard_count): шардовые прогоны kolesa сравниваются только между собой.
+-- status: 'ok' — baseline для следующих сравнений; 'degraded' — упавший
+-- прогон (записывается, но baseline не понижает). Полные комментарии —
+-- database/migrations/003_parser_runs.sql.
+
+CREATE TABLE IF NOT EXISTS parser_runs (
+    id           BIGSERIAL PRIMARY KEY,
+    source_id    INT NOT NULL REFERENCES sources(id),
+    shard_index  INT NOT NULL DEFAULT 0,
+    shard_count  INT NOT NULL DEFAULT 1,
+    saved        INT NOT NULL,
+    new_count    INT NOT NULL,
+    active_after INT,
+    status       TEXT NOT NULL DEFAULT 'ok' CHECK (status IN ('ok', 'degraded')),
+    finished_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_parser_runs_baseline
+    ON parser_runs (source_id, shard_index, shard_count, finished_at DESC);
+
+-- =============================================
+-- КУРСОР DISCOVERY-ПАРСЕРА (миграция 004)
+-- =============================================
+-- Резюмируемый курсор фидов kolesa (t-0017). Пишется/читается
+-- parsers/kolesa/early_stop.py ТОЛЬКО при KOLESA_EARLY_STOP=1 (флаг по
+-- умолчанию выключен — см. предупреждение в early_stop.py). feed_key = slug
+-- фида ("almaty", "toyota/camry", ...); cycle_id = UTC-дата "YYYY-MM-DD"
+-- (или KOLESA_CYCLE_ID); last_page = последняя обработанная страница.
+-- Полные комментарии — database/migrations/004_parse_cursor.sql.
+
+CREATE TABLE IF NOT EXISTS parse_cursor (
+    source_id  INT NOT NULL REFERENCES sources(id),
+    feed_key   TEXT NOT NULL,
+    last_page  INT NOT NULL DEFAULT 0,
+    cycle_id   TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (source_id, feed_key)
+);
+
+-- =============================================
 -- ПОЛЬЗОВАТЕЛИ И ПОДПИСКИ
 -- =============================================
 
