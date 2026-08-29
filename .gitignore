@@ -53,3 +53,6 @@ parsers/kolesa/parser_html_backup.py
 frontend/public/sitemap.xml
 frontend/public/robots.txt
 frontend/tsconfig.tsbuildinfo
+
+# Локальные дампы архивации БД (большие, содержат данные — не для git)
+archive-dumps/

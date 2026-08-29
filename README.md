@@ -40,10 +40,11 @@
 │  reviver (5000/run) GET'ит inactive → 200 ⇒ is_active=TRUE       │
 └──────────────────────────────┬───────────────────────────────────┘
                                │ asyncpg + SSL + statement_cache=0
-                    ┌──────────▼──────────┐
-                    │   Neon PostgreSQL   │  listings, price_history,
-                    │   (serverless)      │  brands, models
-                    └──────────┬──────────┘
+                    ┌──────────▼──────────┐      ┌─────────────────────────┐
+                    │   Neon PostgreSQL   │ pull │  Mac mini: kolesa_archive│
+                    │   (serverless)      │─────►│  полная история (launchd:│
+                    │   hot window ~90d   │ sync │  синк 03:30, prune вс)   │
+                    └──────────┬──────────┘      └─────────────────────────┘
                                │
              ┌─────────────────┴───────────────┐
              │                                 │
@@ -58,7 +59,7 @@
 |-----------|-----------|
 | **Парсеры** | Python 3.11, curl_cffi (Chrome impersonation), asyncio, asyncpg |
 | **Планировщик** | GitHub Actions: `kolesa_full` (cron `0 8,20 * * *`, 3 шарда) + `daily_parsers` (cron `0 */6 * * *`) + `alive_check` (cron `30 */6 * * *`) |
-| **База данных** | Neon PostgreSQL (serverless, free tier, Pooler через PgBouncer) |
+| **База данных** | Neon PostgreSQL (serverless, free tier 512 MB, Pooler через PgBouncer) — hot window ~90 дней; полная история — локальный Postgres 18 `kolesa_archive` на Mac mini (см. `infrastructure/archive/`) |
 | **Backend** | FastAPI, asyncpg, Uvicorn — на Render (Web Service) |
 | **Frontend** | Next.js 14 (static export), TypeScript, SWR, Recharts, Leaflet, zustand — на Render (Static Site) |
 | **Уведомления** | Telegram Bot API |
@@ -305,6 +306,8 @@ NEXT_PUBLIC_SENTRY_DSN=
 │   ├── avtorynok/parser.py
 │   ├── olx/parser.py
 │   └── migrator.py                # Миграция данных между БД
+├── infrastructure/archive/        # Архивный контур Mac mini: sync_neon_to_local.sh,
+│                                  # prune_neon.sh, launchd plists (см. README внутри)
 ├── render.yaml                    # Render.com blueprint: backend + frontend
 ├── docker-compose.yml             # Локально: только backend + frontend (БД = Neon)
 ├── CLAUDE.md                      # Инструкции для AI-агентов (docs-first rules)
@@ -527,6 +530,7 @@ parse_cursor  (source_id, feed_key, last_page, cycle_id, updated_at)
 - **Alive-check worker:** `parsers/kolesa/alive_check.py` берёт inactive и проверяет их URL напрямую. Работает как компенсация для ситуаций когда объявление активно на сайте, но парсер до него не добрался. Rate-limit: ~2 req/s, kolesa не банит. Запускается каждые 6h + автоматически после успешного `kolesa_full`.
 - **Kolesa атрибуты:** На страницах листинга kolesa.kz возвращает только `brand`, `model`, `avgPrice` в `attributes` — поля `mileage_km`, `engine_volume_cc`, `fuel_type` и т.д. будут `NULL`. Полные данные доступны только на странице конкретного объявления (парсинг детальных страниц не реализован).
 - **Neon Pooler + asyncpg:** Используется `statement_cache_size=0` — обязательно при работе через PgBouncer в transaction-pooling режиме, иначе `InvalidSQLStatementNameError`.
+- **Neon 512 MB и архивный контур:** 2026-08-29 база упёрлась в лимит free tier — все пишущие workflow падали с `DiskFullError`. Решение: Neon хранит только hot window (~90 дней по `last_seen_at`), полная история копится в локальном Postgres `kolesa_archive` на Mac mini (ежедневный pull-синк + еженедельная подрезка Neon строго после подтверждённой синхронизации; детали в `infrastructure/archive/README.md`). Тогда же в Neon дропнуты неиспользуемые индексы `idx_listings_first_seen` (32 MB, 122 обращения) и `idx_listings_liveness` (10 MB, 19) — при надобности пересоздать по `database/init_neon.sql`.
 - **Бесплатные прокси:** Включены для mycar/olx/avtorynok/newauto. Для kolesa отключены (`use_proxy=False`) — curl_cffi с Chrome impersonation проходит напрямую, прокси только добавляют задержки через retry-loop.
 - **avtorynok.kz пагинация:** Сайт возвращает одни и те же ~16 объявлений на любом номере страницы. Парсер останавливается после первого повтора ID (стоп по `seen_ids`).
 - **newauto.kz TLS fingerprinting:** Сайт блокирует curl/aiohttp — возвращает пустой ответ. Работает только через `curl_cffi` с Chrome impersonation. Каталог (/catalog) содержит 241 модель без числовых ID; используем slug-ID вида `bmw-x5`.

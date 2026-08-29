@@ -4,6 +4,47 @@
 
 ---
 
+## 2026-08-29 — Neon упёрся в 512 MB: стопгэп + архивный контур на Mac mini (t-0037)
+
+### Fixed
+- Все пишущие workflow (Kolesa Flags, Daily Parsers/deactivate) падали с
+  `asyncpg DiskFullError: project size limit (512 MB) has been exceeded` —
+  база доросла до 492 MB. Стопгэп: в Neon дропнуты неиспользуемые индексы
+  `idx_listings_first_seen` (32 MB, 122 обращения за всё время) и
+  `idx_listings_liveness` (10 MB, 19 обращений) → база 492 → 450 MB,
+  перезапущенный Kolesa Flags прошёл успешно.
+
+### Added
+- **Архивный контур `infrastructure/archive/`** (решение вместо удаления данных —
+  история копится бессрочно): локальный Postgres 18 `kolesa_archive` на Mac mini =
+  полная история; Neon = hot window ~90 дней.
+  - `sync_neon_to_local.sh` — pull-синк Neon → архив (инкрементально по watermark
+    в `sync_state`, `full` для полной пересинхронизации; справочники целиком;
+    price_history с FK-guard от гонки со свежими вставками парсеров).
+  - `prune_neon.sh` — подрезка Neon (DRY_RUN по умолчанию): удаляет только строки
+    старше `HOT_DAYS`, подтверждённо синхронизированные в архив (id + last_seen_at
+    + счётчик price_history), затем VACUUM ANALYZE. TEMP-таблицы в Neon требуют
+    BEGIN/COMMIT (transaction pooling через PgBouncer).
+  - launchd: синк ежедневно 03:30, prune еженедельно вс 04:30.
+  - Разовый полный бэкап `archive-dumps/neon_full_2026-08-29.dump` (pg_dump -Fc);
+    в архив импортированы и CSV-дампы архивации 2026-07-05 (3,400 перепарсенных
+    объявлений слиты: ранний first_seen_at сохранён, их price_history перевешана
+    на новые id, 0 сирот).
+- У архивной `listings` снят `UNIQUE(source_id, external_id)` (заменён обычным
+  индексом): объявление может быть снято и выложено заново → несколько «жизней»
+  с разными id в истории.
+
+### Impact
+- Первый прогон prune: **108,936 строк** удалено из Neon (+price_history каскадом);
+  Neon: 405K listings / 521K price_history, архив: 739K / 933K. Внутри файлов Neon
+  освободилось ~100+ MB под переиспользование — рост упирается в лимит больше не будет,
+  еженедельный prune держит баланс.
+- Диагностика: 242K объявлений висели «активными», не встречаясь парсером
+  с апреля–июня (kolesa исключена из deactivate, liveness заблокирован
+  анти-ботом) — они и раздули базу. Смежный фикс таймаутов kolesa_full — записью выше.
+
+---
+
 ## 2026-08-29 — Kolesa Full Parse: fast-abort при tarpit-бане + ротация фидов
 
 ### Fixed
