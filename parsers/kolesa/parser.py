@@ -18,7 +18,7 @@ import json
 import unicodedata
 from typing import Optional
 
-from parsers.common.http_client import fetch, IPBlockedError
+from parsers.common.http_client import fetch, IPBlockedError, TarpitError
 from parsers.common.db import get_pool, save_listing
 from parsers.common.city_normalizer import normalize_city
 from parsers.kolesa import early_stop
@@ -28,6 +28,12 @@ logger = logging.getLogger("parser.kolesa")
 BASE_URL = "https://kolesa.kz"
 PAGE_SIZE = 20
 MAX_PAGES_PER_CITY = 250  # 250 стр × 20 = 5000 объявлений на город (max на сайте)
+
+# Пауза между страницами внутри одного фида. Workflow'ы задают
+# PARSER_REQUEST_DELAY_MIN/MAX давно, но до 2026-08 код их не читал
+# (жёстко стояло 2-4 с). Дефолты сохраняют старое локальное поведение.
+PAGE_DELAY_MIN = float(os.getenv("PARSER_REQUEST_DELAY_MIN", "2.0"))
+PAGE_DELAY_MAX = float(os.getenv("PARSER_REQUEST_DELAY_MAX", "4.0"))
 
 # Крупные города Казахстана (slug из URL kolesa.kz)
 CITIES = [
@@ -459,6 +465,7 @@ async def parse_city(city: str, session, pool, progress: Optional[dict] = None) 
     saved = 0
     new_saved = 0
     consecutive_errors = 0
+    pages_ok = 0  # успешно загруженные страницы этого фида (для детекта тарпита)
     MAX_CONSECUTIVE_ERRORS = 5  # >5 подряд = интернет лежит, нет смысла продолжать
     if progress is not None:
         progress['active_feeds'].add(city)
@@ -509,6 +516,7 @@ async def parse_city(city: str, session, pool, progress: Optional[dict] = None) 
             # на 15 городов. curl_cffi с Chrome impersonation проходит напрямую.
             html = await fetch(url, use_proxy=False, session=session)
             consecutive_errors = 0  # сбрасываем счётчик при УСПЕШНОЙ загрузке HTML
+            pages_ok += 1
         except IPBlockedError:
             # 403/451 → IP в блоке. Не пытаемся retry, а пробрасываем наверх,
             # чтобы run_parser мог сделать pause-and-retry на уровне батча
@@ -519,6 +527,21 @@ async def parse_city(city: str, session, pool, progress: Optional[dict] = None) 
         except Exception as e:
             consecutive_errors += 1
             if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                if pages_ok == 0:
+                    # Ни одной успешной страницы за весь фид + серия таймаутов
+                    # подряд = tarpit IP-блок (kolesa вешает соединения вместо
+                    # 403), а не проблема конкретного фида. Пробрасываем как
+                    # IP-блок → run_parser через consecutive_full_fails прервёт
+                    # прогон (exit 1, deactivate отменён) за ~15 минут вместо
+                    # 12+ часов мёртвых ретраев до GHA-таймаута в 350 мин.
+                    logger.error(
+                        "kolesa %s: %d таймаутов подряд без единой успешной "
+                        "страницы — tarpit IP-блок",
+                        city, consecutive_errors,
+                    )
+                    if progress is not None:
+                        progress['active_feeds'].discard(city)
+                    raise TarpitError(url) from e
                 logger.error(
                     "kolesa %s: %d ошибок подряд — прерываем фид",
                     city, consecutive_errors,
@@ -595,7 +618,7 @@ async def parse_city(city: str, session, pool, progress: Optional[dict] = None) 
                 )
                 break
 
-        await asyncio.sleep(random.uniform(2.0, 4.0))
+        await asyncio.sleep(random.uniform(PAGE_DELAY_MIN, PAGE_DELAY_MAX))
 
     if progress is not None:
         progress['active_feeds'].discard(city)
@@ -621,13 +644,30 @@ def _get_feeds_for_shard() -> tuple[list[str], int, int]:
     except ValueError:
         shard_count, shard_index = 1, 0
 
+    # ── Ротация фидов между прогонами ──
+    # kolesa тарпитит GHA-runner уже через ~7 минут (~50 страниц на IP): без
+    # ротации каждый прогон успевает обновить ТОЛЬКО первые фиды списка
+    # (almaty, karaganda, ...), остальные неделями не получают last_seen_at.
+    # Детерминированный сдвиг по GITHUB_RUN_NUMBER (одинаков для всех шардов
+    # одного прогона) распределяет «окно до бана» по всем фидам. Ротация —
+    # циклическая перестановка того же множества: здоровый полный прогон
+    # по-прежнему покрывает все фиды. Локально (без GHA) offset = 0.
+    rotation = 0
+    run_number = _os.getenv("GITHUB_RUN_NUMBER", "")
+    if run_number.isdigit() and ALL_FEEDS:
+        # ×37 (взаимно просто с 297): соседние прогоны стартуют с далёких фидов
+        rotation = (int(run_number) * 37) % len(ALL_FEEDS)
+        if rotation:
+            logger.info("Ротация фидов: offset %d (run #%s)", rotation, run_number)
+    rotated_feeds = ALL_FEEDS[rotation:] + ALL_FEEDS[:rotation]
+
     if shard_count < 1 or shard_index < 0 or shard_index >= shard_count:
         logger.warning("Некорректный SHARD_INDEX=%d при SHARD_COUNT=%d — запускаем все фиды",
                        shard_index, shard_count)
-        return ALL_FEEDS, 0, 1
+        return rotated_feeds, 0, 1
 
     # Round-robin: фид i идёт в шард (i % shard_count)
-    feeds = [f for idx, f in enumerate(ALL_FEEDS) if idx % shard_count == shard_index]
+    feeds = [f for idx, f in enumerate(rotated_feeds) if idx % shard_count == shard_index]
     return feeds, shard_index, shard_count
 
 
