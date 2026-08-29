@@ -10,6 +10,7 @@ common/http_client.py
 """
 import asyncio
 import logging
+import os
 import random
 from typing import Any, Optional
 
@@ -32,10 +33,16 @@ RETRYABLE_5XX = {500, 502, 503, 504}
 RATE_LIMIT_STATUSES = {429}
 BLOCKED_STATUSES = {403, 451}  # 403 Forbidden, 451 Unavailable For Legal Reasons
 
-MAX_RETRIES = 3
+# PARSER_MAX_RETRIES = число ПОВТОРОВ после первой попытки (всего попыток N+1).
+# Workflow'ы задают эту переменную давно, но до 2026-08 код её не читал.
+MAX_RETRIES = int(os.getenv("PARSER_MAX_RETRIES", "3"))
 INITIAL_BACKOFF = 3.0           # секунды для 5xx/timeout
 JITTER_RANGE = 2.0
 RATE_LIMIT_BACKOFF_BASE = 60.0  # для 429: минимум 60 с между попытками
+
+# Таймаут одного запроса. Тарпит kolesa вешает соединение до таймаута,
+# поэтому в kolesa_full.yml значение занижено (штатный ответ ~1-2 с).
+HTTP_TIMEOUT = float(os.getenv("PARSER_HTTP_TIMEOUT", "30"))
 
 
 class IPBlockedError(Exception):
@@ -47,6 +54,22 @@ class IPBlockedError(Exception):
         super().__init__(f"IP blocked at {url} (HTTP {status})")
         self.url = url
         self.status = status
+
+
+class TarpitError(IPBlockedError):
+    """
+    Tarpit-вариант IP-блока: сервер не отвечает 403, а вешает каждое
+    соединение до таймаута. Поднимается парсером (не http_client), когда
+    фид не отдал ни одной страницы и упёрся в серию таймаутов подряд.
+    Наследует IPBlockedError, чтобы существующие детекторы блока
+    (consecutive_full_fails в run_parser, exit code 1) сработали без правок.
+    """
+    def __init__(self, url: str):
+        Exception.__init__(
+            self, f"Tarpit IP-блок: все запросы к {url} виснут до таймаута"
+        )
+        self.url = url
+        self.status = 0  # не HTTP-статус — соединение убито на уровне TCP
 
 
 def _headers() -> dict[str, str]:
@@ -92,18 +115,18 @@ async def fetch(
             try:
                 proxies = {"http": proxy, "https": proxy} if proxy else None
 
-                # asyncio.wait_for — жёсткий дедлайн поверх curl_cffi timeout=30.
+                # asyncio.wait_for — жёсткий дедлайн поверх curl_cffi timeout.
                 # curl_cffi иногда висит вечно на зависших TCP — wait_for гарантирует
-                # принудительную отмену через 35 с.
+                # принудительную отмену через HTTP_TIMEOUT + 5 с.
                 resp = await asyncio.wait_for(
                     session.get(
                         url,
                         headers=headers,
                         params=params,
                         proxies=proxies,
-                        timeout=30,
+                        timeout=HTTP_TIMEOUT,
                     ),
-                    timeout=35,
+                    timeout=HTTP_TIMEOUT + 5,
                 )
 
                 # ── 403/451: IP в блоке, retry бесполезен ──
@@ -116,7 +139,7 @@ async def fetch(
                     backoff = RATE_LIMIT_BACKOFF_BASE * (1.5 ** retries) + random.uniform(0, 10)
                     logger.warning(
                         "[%s] HTTP 429 rate limit — попытка %d/%d, sleep %.0f с",
-                        url, retries + 1, MAX_RETRIES, backoff,
+                        url, retries + 1, MAX_RETRIES + 1, backoff,
                     )
                     if proxy:
                         proxy_manager.remove(proxy)
@@ -130,7 +153,7 @@ async def fetch(
                     backoff = INITIAL_BACKOFF * (2 ** retries) + random.uniform(0, JITTER_RANGE)
                     logger.warning(
                         "[%s] HTTP %d — попытка %d/%d, sleep %.1f с",
-                        url, resp.status_code, retries + 1, MAX_RETRIES, backoff,
+                        url, resp.status_code, retries + 1, MAX_RETRIES + 1, backoff,
                     )
                     if proxy:
                         proxy_manager.remove(proxy)
@@ -151,7 +174,7 @@ async def fetch(
                 backoff = INITIAL_BACKOFF * (2 ** retries) + random.uniform(0, JITTER_RANGE)
                 logger.warning(
                     "[%s] %s — попытка %d/%d, sleep %.1f с",
-                    url, type(e).__name__, retries + 1, MAX_RETRIES, backoff,
+                    url, type(e).__name__, retries + 1, MAX_RETRIES + 1, backoff,
                 )
                 if proxy:
                     proxy_manager.remove(proxy)
