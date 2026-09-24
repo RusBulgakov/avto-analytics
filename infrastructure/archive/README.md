@@ -19,20 +19,43 @@ Neon free tier ограничен **512 MB**. 2026-08-29 база упёрлас
 
 | Файл | Что делает |
 |---|---|
+| `install.sh [--run-now]` | Ставит/обновляет контур в launchd: копирует скрипты в `~/.local/share/kolesa-archive`, `DATABASE_URL` — в `~/.config/kolesa-archive/neon.env` (600), грузит агент `com.kolesa.archive-nightly`, удаляет старые `archive-sync`/`archive-prune`. `--run-now` — сразу прогнать через launchd. |
+| `nightly.sh` | Точка входа launchd (ежедневно 03:30): синк (вс — full, иначе incr) + подрезка `DRY_RUN=0`. Итог → `~/Library/Logs/kolesa-archive/last-status`; при сбое — уведомление macOS. |
 | `sync_neon_to_local.sh [full]` | Синк Neon → локальный архив. Без аргумента — инкрементально по watermark (`sync_state`), `full` — полная пересинхронизация listings/price_history. Справочники всегда целиком (upsert). |
-| `prune_neon.sh` | Подрезка Neon: сначала `sync full`, затем удаляет из Neon только те listings старше `HOT_DAYS`, которые подтверждённо есть в архиве (id + last_seen_at не старше + счётчик price_history не меньше). `DRY_RUN=1` по умолчанию. После удаления — `VACUUM ANALYZE`. |
-| `com.kolesa.archive-sync.plist` | launchd: ежедневный инкрементальный синк в 03:30. |
-| `com.kolesa.archive-prune.plist` | launchd: еженедельная подрезка (вс 04:30, `DRY_RUN=0`, `HOT_DAYS=90`). |
+| `prune_neon.sh` | Подрезка Neon: синк (`PRUNE_SYNC_MODE`, default full), затем удаляет из Neon только те listings, которые подтверждённо есть в архиве (id + last_seen_at не старше + счётчик price_history не меньше). Кандидаты: `last_seen_at` старше `HOT_DAYS` (90) **или** сверх бюджета `NEON_MAX_LISTINGS` (450k, самые давно не виденные, но не свежее `MIN_HOT_DAYS`=30). `DRY_RUN=1` по умолчанию. После удаления — `VACUUM ANALYZE`; если строк всё ещё больше бюджета — уведомление. |
+| `neon_compact.sql` | Ручной runbook после КРУПНОЙ подрезки: DROP 4 вторичных индексов → REINDEX CONCURRENTLY раздутых → CREATE обратно. Возвращает файловое место (лимит Neon считает файлы). Гонять через direct-endpoint (без `-pooler`). |
+| `common.sh` | Общие функции: поиск `DATABASE_URL`, `notify` (macOS). |
+| `com.kolesa.archive-nightly.plist` | Шаблон launchd-агента (плейсхолдеры подставляет `install.sh`). |
 
-Установка launchd-агентов (копии лежат в `~/Library/LaunchAgents/`):
+Установка / обновление (после ЛЮБОЙ правки скриптов — launchd исполняет копии):
 
 ```bash
-cp infrastructure/archive/com.kolesa.archive-*.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.kolesa.archive-sync.plist
-launchctl load ~/Library/LaunchAgents/com.kolesa.archive-prune.plist
+./infrastructure/archive/install.sh --run-now
+cat ~/Library/Logs/kolesa-archive/last-status
 ```
 
-Логи: `~/Library/Logs/kolesa-archive/{sync,prune,launchd-*}.log`.
+Логи: `~/Library/Logs/kolesa-archive/{sync,prune,launchd-nightly}.log`, итог — `last-status`.
+
+### Почему скрипты не запускаются прямо из репо
+
+Репо лежит в `~/Documents`, а macOS (TCC) запрещает фоновым launchd-процессам
+доступ к `~/Documents`, `~/Desktop`, `~/Downloads`. Первые агенты
+(2026-08-29) указывали прямо в репо и каждую ночь падали с
+`/bin/bash: ...: Operation not permitted` (exit 126) — молча, почти месяц.
+Neon снова дорос до 512 MB, и 2026-09-20…25 все пишущие парсеры падали с
+`DiskFullError`. Full Disk Access для `/bin/bash` сознательно не выдаём (это
+открыло бы весь диск любому bash-скрипту) — вместо этого копии вне `~/Documents`.
+
+### Лимит Neon = размер файлов
+
+Обычный `VACUUM` после подрезки освобождает место ВНУТРИ файлов (новые строки
+ложатся туда), но файлы не уменьшаются. Индексы с растущим ключом
+(`price_history.id`, `recorded_at`, kolesa `external_id`) растут правым краем и
+требуют новые страницы — поэтому у потолка вставки цен падали даже после
+подрезки 148k объявлений. Лекарство — `neon_compact.sql` (2026-09-25:
+кластер 512 → 363 MB; `listings_source_id_external_id_key` 47 → 13 MB).
+Ежедневная подрезка режет понемногу, и освобождённые страницы индексов
+переиспользуются — компакт нужен только после крупных разовых подрезок.
 
 ## Как восстановить строку из архива обратно в Neon
 

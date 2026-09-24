@@ -7,7 +7,7 @@ newauto/parser.py — newauto.kz (новые автомобили от диле�
   - URL моделей: /cars/bmw/x5 — числового ID нет; используем slug "bmw-x5".
   - year = текущий год (все авто новые), mileage_km = 0, condition = "new".
 """
-import asyncio, logging, re, unicodedata
+import asyncio, logging, re, sys, unicodedata
 from datetime import date
 from typing import Optional
 from bs4 import BeautifulSoup
@@ -123,7 +123,13 @@ async def run_parser() -> tuple[int, int]:
                     logger.info("newauto стр %d пуста — стоп", page)
                     break
                 for i in items:
-                    _, is_new = await save_listing(conn, i)
+                    # Сбой записи не роняет прогон: объявление уже в спуле
+                    # (save_listing → spool), db_guard.yml дольёт его позже.
+                    try:
+                        _, is_new = await save_listing(conn, i)
+                    except Exception as e:
+                        logger.warning("newauto: не удалось сохранить %s: %s", i.get("external_id"), e)
+                        continue
                     total += 1
                     if is_new:
                         total_new += 1
@@ -148,3 +154,6 @@ if __name__ == "__main__":
     except Exception as e:
         logger.exception("Парсер newauto упал")
         asyncio.run(send_error("newauto", e))
+        # Без exit 1 job оставался зелёным при крэше (так 2026-09-20…25
+        # DiskFullError выглядел «успешными» прогонами).
+        sys.exit(1)

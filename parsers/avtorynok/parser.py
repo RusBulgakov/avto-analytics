@@ -4,7 +4,7 @@ avtorynok/parser.py
 Убран жёсткий лимит страниц — стоп по пустой странице.
 Добавлено извлечение пробега и объёма двигателя из строки описания.
 """
-import asyncio, logging, re, unicodedata
+import asyncio, logging, re, sys, unicodedata
 from typing import Optional
 from bs4 import BeautifulSoup
 from parsers.common.http_client import fetch
@@ -197,3 +197,6 @@ if __name__ == "__main__":
     except Exception as e:
         logger.exception("Парсер avtorynok упал")
         asyncio.run(send_error("avtorynok", e))
+        # Без exit 1 job оставался зелёным при крэше (так 2026-09-20…25
+        # DiskFullError выглядел «успешными» прогонами).
+        sys.exit(1)

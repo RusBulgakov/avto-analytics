@@ -56,3 +56,7 @@ frontend/tsconfig.tsbuildinfo
 
 # Локальные дампы архивации БД (большие, содержат данные — не для git)
 archive-dumps/
+
+# Спул несохранённых в БД объявлений (parsers/common/spool.py)
+spool/
+spool_in/

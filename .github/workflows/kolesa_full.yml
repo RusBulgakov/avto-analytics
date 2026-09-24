@@ -123,6 +123,18 @@ jobs:
           PARSER_MAX_RETRIES: 2
           PARSER_HTTP_TIMEOUT: 15
 
+      # Объявления, которые не удалось записать в БД (Neon переполнен/недоступен),
+      # парсер кладёт в spool/ — уносим их артефактом, db_guard.yml дольёт.
+      # 2026-09-20…25 без этого терялось всё спарсенное за неделю.
+      - name: Upload spool (unsaved listings)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spool-kolesa-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard_index }}
+          path: spool/
+          if-no-files-found: ignore
+          retention-days: 30
+
   # ─────────────────────────────────────────
   # Шаг 2: Деактивация старых объявлений
   # ─────────────────────────────────────────
