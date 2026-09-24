@@ -13,9 +13,18 @@ search-результатов (~430 страниц вместе, ~15 минут)
   flags_updated_at    TIMESTAMPTZ
 
 Logic:
-  1. Default-marking: ВСЕ active kolesa-listings → emergency=FALSE, customs=TRUE
-  2. Override через ID-сеты: emergency=TRUE для need-repair-IDs, customs=FALSE
+  1. Override через ID-сеты: emergency=TRUE для need-repair-IDs, customs=FALSE
      для auto-custom=1-IDs.
+  2. Сброс остальных active kolesa-listings (emergency=FALSE, customs=TRUE) —
+     ТОЛЬКО если фильтр пройден до конца. С 2026-08 kolesa тарпитит GHA и сбор
+     обрывается на ~20 из ~170 страниц: безусловный сброс каждые 8ч «очищал»
+     тысячи реально аварийных/нерастаможенных машин, и они попадали в ценовую
+     статистику. При неполном сборе флаги только добавляются (липкий TRUE).
+  3. UPDATE трогает только строки, где значение реально меняется. Раньше каждый
+     прогон переписывал все ~370k active строк: раздувал listings и все её
+     индексы (к 2026-09 в 3–4 раза — вклад в переполнение Neon 512 MB) и сдвигал
+     flags_updated_at, из-за чего инкрементальный синк архива тянул всю таблицу.
+     flags_updated_at теперь = «когда флаги строки последний раз менялись».
 
 Аналитические endpoints используют эти флаги вместо title-keyword + price-outlier
 эвристики (которая остаётся как fallback для не-kolesa источников и для kolesa-
@@ -67,10 +76,13 @@ async def _fetch_page(session, url: str, page: int) -> Optional[str]:
         return None
 
 
-async def collect_filter_ids(session, filter_url: str, label: str) -> set[str]:
-    """Парсит все pages фильтра, возвращает set of external_ids."""
+async def collect_filter_ids(session, filter_url: str, label: str) -> tuple[set[str], bool]:
+    """Парсит все pages фильтра. Возвращает (external_ids, complete):
+    complete=True — пагинация дошла до естественного конца (пустая страница /
+    повтор ID); False — оборвалась по ошибкам (tarpit) или по MAX_PAGES."""
     ids: set[str] = set()
     consecutive_empty = 0
+    complete = False
     for page in range(1, MAX_PAGES + 1):
         html = await _fetch_page(session, filter_url, page)
         if not html:
@@ -84,68 +96,95 @@ async def collect_filter_ids(session, filter_url: str, label: str) -> set[str]:
         page_ids = set(re.findall(r'/a/show/(\d+)', html))
         if not page_ids:
             logger.info("[%s] page %d empty — stop", label, page)
+            complete = True
             break
         new_count = len(page_ids - ids)
         ids.update(page_ids)
         if new_count == 0:
             # OLX-style зацикленная пагинация — все ID мы уже видели
             logger.info("[%s] page %d — все ID уже виделись, stop", label, page)
+            complete = True
             break
         if page % 20 == 0 or page == 1:
             logger.info("[%s] page %d: +%d new (total=%d)", label, page, new_count, len(ids))
         await asyncio.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
-    logger.info("[%s] collected %d unique IDs across %d pages", label, len(ids), page)
-    return ids
+    if complete and not ids:
+        # Пустой фильтр с 1-й страницы — скорее смена разметки, чем «нет
+        # аварийных»: сброс всех флагов по такому сигналу опасен.
+        logger.warning("[%s] 0 ID при «полном» проходе — считаем сбор неполным", label)
+        complete = False
+    logger.info(
+        "[%s] collected %d unique IDs across %d pages (%s)",
+        label, len(ids), page, "complete" if complete else "INCOMPLETE — без сброса",
+    )
+    return ids, complete
 
 
-async def apply_flags(pool, emergency_ids: set[str], not_cleared_ids: set[str]) -> dict:
+async def apply_flags(
+    pool,
+    emergency_ids: set[str],
+    not_cleared_ids: set[str],
+    emergency_complete: bool = True,
+    not_cleared_complete: bool = True,
+) -> dict:
     """
-    Атомарно обновляет флаги в БД:
-      1. ALL active kolesa → emergency=FALSE, customs=TRUE, flags_updated_at=NOW()
-      2. emergency_ids → emergency=TRUE
-      3. not_cleared_ids → customs=FALSE
+    Обновляет флаги kolesa-объявлений, трогая только строки, где значение меняется:
+      1. emergency_ids → emergency=TRUE; not_cleared_ids → customs=FALSE
+         (любые строки kolesa с этими external_id, как и раньше);
+      2. если соответствующий сбор полный — остальные ACTIVE kolesa →
+         emergency=FALSE / customs=TRUE.
     """
+    emergency = list(emergency_ids)
+    not_cleared = list(not_cleared_ids)
     async with pool.acquire() as conn:
-        # Шаг 1: default-mark — kolesa source_id
         kolesa_id = await conn.fetchval("SELECT id FROM sources WHERE name = 'kolesa'")
         if not kolesa_id:
             raise RuntimeError("source 'kolesa' not found in sources table")
 
-        baseline_result = await conn.execute("""
-            UPDATE listings
-            SET is_emergency = FALSE,
-                is_customs_cleared = TRUE,
-                flags_updated_at = NOW()
-            WHERE source_id = $1 AND is_active = TRUE
-        """, kolesa_id)
-        baseline_n = int(baseline_result.split()[1]) if baseline_result.startswith("UPDATE") else 0
+        def _n(status: str) -> int:
+            return int(status.split()[1]) if status.startswith("UPDATE") else 0
 
-        # Шаг 2: override is_emergency=TRUE для собранных IDs
-        if emergency_ids:
-            res = await conn.execute("""
+        emergency_n = not_cleared_n = emergency_reset = customs_reset = 0
+        if emergency:
+            emergency_n = _n(await conn.execute("""
                 UPDATE listings
                 SET is_emergency = TRUE, flags_updated_at = NOW()
                 WHERE source_id = $1 AND external_id = ANY($2::text[])
-            """, kolesa_id, list(emergency_ids))
-            emergency_n = int(res.split()[1]) if res.startswith("UPDATE") else 0
-        else:
-            emergency_n = 0
-
-        # Шаг 3: override is_customs_cleared=FALSE для собранных IDs
-        if not_cleared_ids:
-            res = await conn.execute("""
+                  AND is_emergency IS DISTINCT FROM TRUE
+            """, kolesa_id, emergency))
+        if not_cleared:
+            not_cleared_n = _n(await conn.execute("""
                 UPDATE listings
                 SET is_customs_cleared = FALSE, flags_updated_at = NOW()
                 WHERE source_id = $1 AND external_id = ANY($2::text[])
-            """, kolesa_id, list(not_cleared_ids))
-            not_cleared_n = int(res.split()[1]) if res.startswith("UPDATE") else 0
-        else:
-            not_cleared_n = 0
+                  AND is_customs_cleared IS DISTINCT FROM FALSE
+            """, kolesa_id, not_cleared))
+        if emergency_complete:
+            emergency_reset = _n(await conn.execute("""
+                UPDATE listings
+                SET is_emergency = FALSE, flags_updated_at = NOW()
+                WHERE source_id = $1 AND is_active = TRUE
+                  AND NOT (external_id = ANY($2::text[]))
+                  AND is_emergency IS DISTINCT FROM FALSE
+            """, kolesa_id, emergency))
+        if not_cleared_complete:
+            customs_reset = _n(await conn.execute("""
+                UPDATE listings
+                SET is_customs_cleared = TRUE, flags_updated_at = NOW()
+                WHERE source_id = $1 AND is_active = TRUE
+                  AND NOT (external_id = ANY($2::text[]))
+                  AND is_customs_cleared IS DISTINCT FROM TRUE
+            """, kolesa_id, not_cleared))
 
     return {
-        "baseline_marked": baseline_n,
+        # baseline_marked — сколько строк сброшено к «чистому» состоянию
+        "baseline_marked": emergency_reset + customs_reset,
+        "emergency_reset": emergency_reset,
+        "customs_reset": customs_reset,
         "emergency_marked": emergency_n,
         "not_cleared_marked": not_cleared_n,
+        "emergency_complete": emergency_complete,
+        "not_cleared_complete": not_cleared_complete,
     }
 
 
@@ -163,7 +202,9 @@ async def run_flags() -> dict:
         not_cleared_task = collect_filter_ids(
             session, f"{BASE_URL}/cars/?auto-custom=1", "not_cleared"
         )
-        emergency_ids, not_cleared_ids = await asyncio.gather(emergency_task, not_cleared_task)
+        (emergency_ids, emergency_complete), (not_cleared_ids, not_cleared_complete) = (
+            await asyncio.gather(emergency_task, not_cleared_task)
+        )
 
     elapsed_collect = time.time() - start
     logger.info(
@@ -171,7 +212,9 @@ async def run_flags() -> dict:
         len(emergency_ids), len(not_cleared_ids), elapsed_collect,
     )
 
-    stats = await apply_flags(pool, emergency_ids, not_cleared_ids)
+    stats = await apply_flags(
+        pool, emergency_ids, not_cleared_ids, emergency_complete, not_cleared_complete,
+    )
     stats["emergency_collected"] = len(emergency_ids)
     stats["not_cleared_collected"] = len(not_cleared_ids)
     stats["elapsed_s"] = round(time.time() - start, 1)
