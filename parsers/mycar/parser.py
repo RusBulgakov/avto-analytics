@@ -3,7 +3,7 @@ mycar/parser.py — mycar.kz
 Использует официальный JSON REST API: https://api.mycar.kz/api/publications/
 Максимально извлекает все доступные поля из богатого API-ответа.
 """
-import asyncio, logging, re, unicodedata
+import asyncio, logging, re, sys, unicodedata
 from typing import Optional
 from parsers.common.http_client import fetch
 from parsers.common.db import db_conn, save_listing
@@ -152,7 +152,13 @@ async def run_parser() -> tuple[int, int]:
                 items = [_parse_item(r) for r in results]
                 items = [i for i in items if i and i["external_id"]]
                 for item in items:
-                    _, is_new = await save_listing(conn, item)
+                    # Сбой записи не роняет прогон: объявление уже в спуле
+                    # (save_listing → spool), db_guard.yml дольёт его позже.
+                    try:
+                        _, is_new = await save_listing(conn, item)
+                    except Exception as e:
+                        logger.warning("mycar: не удалось сохранить %s: %s", item.get("external_id"), e)
+                        continue
                     total += 1
                     if is_new:
                         new_total += 1
@@ -185,3 +191,6 @@ if __name__ == "__main__":
     except Exception as e:
         logger.exception("Парсер mycar упал")
         asyncio.run(send_error("mycar", e))
+        # Без exit 1 job оставался зелёным при крэше (так 2026-09-20…25
+        # DiskFullError выглядел «успешными» прогонами).
+        sys.exit(1)

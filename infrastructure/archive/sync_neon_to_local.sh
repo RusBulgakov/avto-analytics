@@ -24,8 +24,9 @@ exec >> "$LOG_DIR/sync.log" 2>&1
 
 echo "=== sync start $(date '+%F %T') mode=$MODE ==="
 
-NEON_URL="$(grep -m1 '^DATABASE_URL=' "$REPO_DIR/.env" | cut -d= -f2- | tr -d '"' | tr -d "'")"
-if [ -z "$NEON_URL" ]; then echo "FATAL: DATABASE_URL not found in $REPO_DIR/.env"; exit 1; fi
+# shellcheck source=common.sh
+. "$SCRIPT_DIR/common.sh"
+load_neon_url "$REPO_DIR"
 
 npsql() { psql "$NEON_URL" -v ON_ERROR_STOP=1 "$@"; }
 lpsql() { psql -h localhost -d "$LOCAL_DB" -v ON_ERROR_STOP=1 "$@"; }

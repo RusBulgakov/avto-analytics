@@ -104,6 +104,17 @@ jobs:
           PARSER_REQUEST_DELAY_MAX: 6
           PARSER_MAX_RETRIES: 3
 
+      # Несохранённые в БД объявления (Neon переполнен/недоступен) → артефакт,
+      # db_guard.yml дольёт их с исходным временем наблюдения.
+      - name: Upload spool (unsaved listings)
+        if: always() && steps.check.outputs.should_run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: spool-${{ matrix.source }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: spool/
+          if-no-files-found: ignore
+          retention-days: 30
+
   # ─────────────────────────────────────────
   # Шаг 3: Деактивация старых объявлений (light-парсеры)
   # ─────────────────────────────────────────

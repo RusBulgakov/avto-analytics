@@ -8,13 +8,26 @@
 #   DRY_RUN=1 ./prune_neon.sh     # (по умолчанию) только посчитать и показать
 #   DRY_RUN=0 ./prune_neon.sh     # реально удалить + VACUUM
 #   HOT_DAYS=90                   # окно хранения в Neon (дней), по умолчанию 90
+#   NEON_MAX_LISTINGS=450000      # бюджет строк listings в Neon (страховка лимита 512 MB)
+#   MIN_HOT_DAYS=30               # бюджет никогда не режет объявления свежее этого
+#   PRUNE_SYNC_MODE=full|incr     # какой синк прогнать перед подрезкой (default full)
 #
-# Перед подрезкой всегда прогоняется полная синхронизация (mode=full).
+# Кандидаты = (не встречались >= HOT_DAYS дней) ИЛИ (самые давно не встречавшиеся
+# сверх бюджета NEON_MAX_LISTINGS, но не свежее MIN_HOT_DAYS). Бюджет нужен,
+# потому что поток данных растёт: 90 дней истории могут перестать влезать в
+# 512 MB, и тогда падают ВСЕ пишущие парсеры (2026-08-29, 2026-09-20).
+#
+# Безопасность не зависит от режима синка: удаляется только то, что сверка
+# подтвердила в архиве; инкрементальный синк лишь может отложить часть
+# кандидатов до следующего запуска («rejected»).
 
 set -euo pipefail
 
 HOT_DAYS="${HOT_DAYS:-90}"
 DRY_RUN="${DRY_RUN:-1}"
+NEON_MAX_LISTINGS="${NEON_MAX_LISTINGS:-450000}"
+MIN_HOT_DAYS="${MIN_HOT_DAYS:-30}"
+PRUNE_SYNC_MODE="${PRUNE_SYNC_MODE:-full}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 LOCAL_DB="${LOCAL_DB:-kolesa_archive}"
@@ -25,22 +38,37 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 mkdir -p "$LOG_DIR"
 exec >> "$LOG_DIR/prune.log" 2>&1
 
-echo "=== prune start $(date '+%F %T') HOT_DAYS=$HOT_DAYS DRY_RUN=$DRY_RUN ==="
+echo "=== prune start $(date '+%F %T') HOT_DAYS=$HOT_DAYS MAX_LISTINGS=$NEON_MAX_LISTINGS MIN_HOT_DAYS=$MIN_HOT_DAYS SYNC=$PRUNE_SYNC_MODE DRY_RUN=$DRY_RUN ==="
 
-# 1. Свежая полная синхронизация — иначе не режем.
-"$SCRIPT_DIR/sync_neon_to_local.sh" full
+# shellcheck source=common.sh
+. "$SCRIPT_DIR/common.sh"
+load_neon_url "$REPO_DIR"
 
-NEON_URL="$(grep -m1 '^DATABASE_URL=' "$REPO_DIR/.env" | cut -d= -f2- | tr -d '"' | tr -d "'")"
+# 1. Свежая синхронизация — иначе не режем.
+if [ "$PRUNE_SYNC_MODE" = "full" ]; then
+  "$SCRIPT_DIR/sync_neon_to_local.sh" full
+else
+  "$SCRIPT_DIR/sync_neon_to_local.sh"
+fi
+
 npsql() { psql "$NEON_URL" -v ON_ERROR_STOP=1 "$@"; }
 lpsql() { psql -h localhost -d "$LOCAL_DB" -v ON_ERROR_STOP=1 "$@"; }
 
 # 2. Кандидаты из Neon: id + last_seen_at + число строк price_history.
+#    rn — ранг «свежести»: всё, что за пределами бюджета NEON_MAX_LISTINGS
+#    (и старше MIN_HOT_DAYS), тоже уходит в архив.
 CAND="$TMP_DIR/candidates.csv"
 npsql -q -c "\\copy (
-  SELECT l.id, l.last_seen_at, COALESCE(p.n, 0) AS ph_n
-  FROM listings l
-  LEFT JOIN (SELECT listing_id, count(*) AS n FROM price_history GROUP BY 1) p ON p.listing_id = l.id
-  WHERE l.last_seen_at < now() - interval '$HOT_DAYS days'
+  WITH ranked AS (
+    SELECT id, last_seen_at,
+           row_number() OVER (ORDER BY last_seen_at DESC NULLS LAST, id) AS rn
+    FROM listings
+  )
+  SELECT r.id, r.last_seen_at, COALESCE(p.n, 0) AS ph_n
+  FROM ranked r
+  LEFT JOIN (SELECT listing_id, count(*) AS n FROM price_history GROUP BY 1) p ON p.listing_id = r.id
+  WHERE r.last_seen_at < now() - interval '$HOT_DAYS days'
+     OR (r.rn > $NEON_MAX_LISTINGS AND r.last_seen_at < now() - interval '$MIN_HOT_DAYS days')
 ) TO '$CAND' WITH (FORMAT csv)"
 echo "candidates from neon: $(wc -l < "$CAND" | tr -d ' ')"
 
@@ -71,8 +99,20 @@ if [ "$DRY_RUN" != "0" ]; then
   exit 0
 fi
 
+# Бюджет упёрся в пол MIN_HOT_DAYS (или сверка отложила кандидатов) — строк
+# в Neon всё ещё больше бюджета. Это ранний сигнал, что место скоро кончится.
+check_budget() {
+  local n
+  n="$(npsql -t -A -c "SELECT count(*) FROM listings;")"
+  echo "neon listings after prune: $n (budget $NEON_MAX_LISTINGS)"
+  if [ "$n" -gt "$NEON_MAX_LISTINGS" ]; then
+    notify "Neon: $n listings > бюджета $NEON_MAX_LISTINGS даже после подрезки — проверь место (лимит 512 MB)"
+  fi
+}
+
 if [ "$N_APPROVED" = "0" ]; then
   echo "нечего удалять"
+  check_budget
   echo "=== prune done $(date '+%F %T') ==="
   exit 0
 fi
@@ -89,7 +129,11 @@ SQL
 echo "deleted from neon: $N_APPROVED listings (+ price_history каскадом)"
 
 # 5. VACUUM — освободить страницы под повторное использование.
+#    NB: обычный VACUUM не уменьшает файлы, поэтому pg_database_size почти не
+#    падает — но освобождённое место переиспользуется новыми вставками, и
+#    DiskFullError («could not extend file») уходит.
 npsql -q -c "VACUUM ANALYZE listings;" -c "VACUUM ANALYZE price_history;"
 npsql -c "SELECT pg_size_pretty(pg_database_size(current_database())) AS neon_db_size;"
 
+check_budget
 echo "=== prune done $(date '+%F %T') ==="

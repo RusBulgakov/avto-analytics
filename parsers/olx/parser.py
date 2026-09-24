@@ -7,6 +7,7 @@ import asyncio
 import logging
 import random
 import re
+import sys
 import unicodedata
 from typing import Optional
 
@@ -314,7 +315,13 @@ async def parse_feed(feed_url: str, session, conn, seen_ids: set) -> tuple[int, 
             seen_ids.add(l["external_id"])
 
         for item in listings:
-            _, is_new = await save_listing(conn, item)
+            # Сбой записи не обрывает фид: объявление уже в спуле
+            # (save_listing → spool), db_guard.yml дольёт его позже.
+            try:
+                _, is_new = await save_listing(conn, item)
+            except Exception as e:
+                logger.warning("OLX: не удалось сохранить %s: %s", item.get("external_id"), e)
+                continue
             saved += 1
             if is_new:
                 new += 1
@@ -364,3 +371,6 @@ if __name__ == "__main__":
     except Exception as e:
         logger.exception("Парсер olx упал")
         asyncio.run(send_error("olx", e))
+        # Без exit 1 job оставался зелёным при крэше (так 2026-09-20…25
+        # DiskFullError выглядел «успешными» прогонами).
+        sys.exit(1)

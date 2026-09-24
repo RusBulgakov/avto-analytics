@@ -19,8 +19,8 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│   GitHub Actions — 7 workflow (3 главных ниже; ещё fetch_fx,     │
-│   kolesa_flags, kolesa_liveness, archive — см. §Workflows)       │
+│   GitHub Actions — 8 workflow (3 главных ниже; ещё fetch_fx,     │
+│   kolesa_flags, kolesa_liveness, archive, db_guard — §Workflows) │
 │                                                                  │
 │  kolesa_full.yml      — 2× в сутки (08:00 + 20:00 UTC)           │
 │  matrix [shard 0, 1, 2]      ─ ~99 фидов на шард, 350-мин timeout│
@@ -38,12 +38,16 @@
 │                                                                  │
 │  alive_check.yml      — каждые 6 часов                           │
 │  reviver (5000/run) GET'ит inactive → 200 ⇒ is_active=TRUE       │
+│                                                                  │
+│  db_guard.yml         — каждые 3 часа                            │
+│  ёмкость Neon → Telegram-алерт; долив spool-* артефактов в БД    │
+│  (парсеры при сбое записи в БД складывают объявления в спул)     │
 └──────────────────────────────┬───────────────────────────────────┘
                                │ asyncpg + SSL + statement_cache=0
                     ┌──────────▼──────────┐      ┌─────────────────────────┐
                     │   Neon PostgreSQL   │ pull │  Mac mini: kolesa_archive│
-                    │   (serverless)      │─────►│  полная история (launchd:│
-                    │   hot window ~90d   │ sync │  синк 03:30, prune вс)   │
+                    │   (serverless)      │─────►│  полная история (launchd │
+                    │   hot window ~90d   │ sync │  03:30: синк + prune)    │
                     └──────────┬──────────┘      └─────────────────────────┘
                                │
              ┌─────────────────┴───────────────┐
@@ -58,7 +62,7 @@
 | Компонент | Технологии |
 |-----------|-----------|
 | **Парсеры** | Python 3.11, curl_cffi (Chrome impersonation), asyncio, asyncpg |
-| **Планировщик** | GitHub Actions: `kolesa_full` (cron `0 8,20 * * *`, 3 шарда) + `daily_parsers` (cron `0 */6 * * *`) + `alive_check` (cron `30 */6 * * *`) |
+| **Планировщик** | GitHub Actions: `kolesa_full` (cron `0 8,20 * * *`, 3 шарда) + `daily_parsers` (cron `0 */6 * * *`) + `alive_check` (cron `30 */6 * * *`) + `db_guard` (cron `40 */3 * * *`); Mac mini launchd `com.kolesa.archive-nightly` (03:30) |
 | **База данных** | Neon PostgreSQL (serverless, free tier 512 MB, Pooler через PgBouncer) — hot window ~90 дней; полная история — локальный Postgres 18 `kolesa_archive` на Mac mini (см. `infrastructure/archive/`) |
 | **Backend** | FastAPI, asyncpg, Uvicorn — на Render (Web Service) |
 | **Frontend** | Next.js 14 (static export), TypeScript, SWR, Recharts, Leaflet, zustand — на Render (Static Site) |
@@ -171,6 +175,24 @@ ARCHIVE_BATCH          — размер пачки за транзакцию (de
 ARCHIVE_DRY_RUN        — '1' (default, безопасно): только печать плана; '0' — перенос
 ```
 
+### Спул и ёмкость Neon (env parsers/common/spool.py, neon_capacity.py)
+
+```
+PARSER_SPOOL_DIR   — каталог спула несохранённых объявлений (default spool/)
+NEON_LIMIT_MB      — лимит кластера Neon, MB (default 512)
+NEON_WARN_MB       — порог Telegram-алерта «Neon почти полон», MB (default 470)
+```
+
+### Архивный контур Mac mini (env infrastructure/archive/prune_neon.sh; задаются в plist)
+
+```
+HOT_DAYS           — окно хранения в Neon по last_seen_at, дней (default 90)
+NEON_MAX_LISTINGS  — бюджет строк listings в Neon (default 450000); сверх — режутся самые старые
+MIN_HOT_DAYS       — бюджет никогда не режет свежее этого, дней (default 30)
+PRUNE_SYNC_MODE    — full|incr — синк перед подрезкой (nightly: вс full, иначе incr)
+DRY_RUN            — 1 (default при ручном запуске) = только план; nightly = 0
+```
+
 ### Smart-thresholds (env parsers/common/run_stats.py — алерт при тихой деградации)
 
 ```
@@ -250,7 +272,8 @@ NEXT_PUBLIC_SENTRY_DSN=
 │   ├── daily_parsers.yml          # Лёгкие парсеры — каждые 6ч (mycar/newauto/avtorynok/olx)
 │   ├── alive_check.yml            # Оживление inactive — каждые 6ч + auto после kolesa
 │   ├── kolesa_liveness.yml        # Liveness sweep (детектор «продано») — 4×/сутки
-│   └── archive.yml                # Холодная архивация inactive >30d — раз в неделю (dry-run по умолчанию)
+│   ├── archive.yml                # Холодная архивация inactive >30d — раз в неделю (dry-run по умолчанию)
+│   └── db_guard.yml               # Каждые 3ч: ёмкость Neon (Telegram-алерт) + долив спула в БД
 ├── backend/
 │   └── app/
 │       ├── api/v1/endpoints/      # analytics.py (/api/v1/analytics/*), insights.py (/api/v1/analytics/insights/*), auth.py
@@ -288,7 +311,10 @@ NEXT_PUBLIC_SENTRY_DSN=
 ├── parsers/
 │   ├── requirements.txt           # Зависимости парсеров
 │   ├── common/
-│   │   ├── db.py                  # asyncpg пул, save_listing, deactivate_old_listings (168h)
+│   │   ├── db.py                  # asyncpg пул, save_listing (+seen_at, спул при сбое), deactivate_old_listings (168h)
+│   │   ├── spool.py               # Спул несохранённых объявлений → spool/*.jsonl → GHA-артефакт
+│   │   ├── replay_spool.py        # Долив спула в БД с исходным seen_at (db_guard.yml)
+│   │   ├── neon_capacity.py       # Ёмкость кластера Neon vs 512 MB → Telegram-алерт (db_guard.yml)
 │   │   ├── city_normalizer.py     # Единая нормализация городов: alias-карта (кириллица/транслиты/KZ) → latin slug
 │   │   ├── http_client.py         # curl_cffi fetch + IPBlockedError + per-error retry strategy
 │   │   ├── proxy_manager.py       # Загрузка и проверка прокси (семафор 200)
@@ -306,8 +332,8 @@ NEXT_PUBLIC_SENTRY_DSN=
 │   ├── avtorynok/parser.py
 │   ├── olx/parser.py
 │   └── migrator.py                # Миграция данных между БД
-├── infrastructure/archive/        # Архивный контур Mac mini: sync_neon_to_local.sh,
-│                                  # prune_neon.sh, launchd plists (см. README внутри)
+├── infrastructure/archive/        # Архивный контур Mac mini: install.sh → launchd nightly
+│                                  # (sync + prune), neon_compact.sql (см. README внутри)
 ├── render.yaml                    # Render.com blueprint: backend + frontend
 ├── docker-compose.yml             # Локально: только backend + frontend (БД = Neon)
 ├── CLAUDE.md                      # Инструкции для AI-агентов (docs-first rules)
@@ -399,6 +425,29 @@ timeout: 60 мин, concurrency group: archive-old
 **Безопасно по умолчанию:** и cron, и ручной запуск идут в **dry-run** (печатают план: COUNT + разбивка по source + строки price_history — записи нет), пока владелец не установит **repo variable `ARCHIVE_DRY_RUN=0`** (Settings → Secrets and variables → Actions → Variables) после ревью плана. Перед первым реальным прогоном нужно применить миграцию `database/migrations/002_listings_archive.sql` в Neon SQL Editor.
 
 **Урок первого прогона (2026-07-05):** архивные таблицы живут в том же Neon-проекте, поэтому перенос сам по себе места НЕ освобождает — INSERT в архив растит базу раньше, чем DELETE освободит (первый bulk-прогон упёрся в 512 MB на пачке 24). Рабочая процедура на free tier: **архив = staging-буфер**: (1) прогон archive_old переносит пачки в `*_archive`; (2) буфер выгружается локально (`COPY ... TO` → `archive-dumps/*.csv.gz` в корне проекта, вне git) с построчной CSV-сверкой; (3) `TRUNCATE listings_archive, price_history_archive`; (4) `VACUUM listings, price_history` — мёртвое место становится переиспользуемым, и вставки парсеров месяцами не растят файлы (Neon-лимит блокирует только РАСШИРЕНИЕ файлов). Автоматический еженедельный real-run включать только после того, как эта выгрузка автоматизирована; пока `ARCHIVE_DRY_RUN` остаётся '1' (cron печатает план).
+
+---
+
+### `db_guard.yml` — ёмкость Neon + долив спула
+
+```
+Расписание: cron '40 */3 * * *' (каждые 3 часа), workflow_dispatch
+timeout: 60 мин, concurrency group: db-guard, permissions: actions: write
+Шаги:
+  1. parsers/common/neon_capacity.py — сумма pg_database_size по всем БД
+     кластера vs NEON_LIMIT_MB (512); >= NEON_WARN_MB (470) → ::warning:: +
+     Telegram «Neon почти полон». Exit 0 (сигнал, не авария).
+  2. Скачивает все непросроченные артефакты spool-* (их заливают kolesa_full
+     и daily_parsers, если БД не приняла запись) → parsers/common/replay_spool.py
+     доливает их через save_listing с исходным seen_at → удаляет только
+     полностью долитые артефакты. БД всё ещё не пишет → exit 1, артефакты
+     остаются до следующего запуска (retention 30 дней).
+```
+
+**Зачем:** 2026-09-20…25 Neon снова был переполнен, и почти неделю все
+парсеры качали страницы впустую — всё спарсенное терялось с WARNING в логе, а
+узнали об этом по красным прогонам. Теперь (1) алерт приходит заранее, (2) даже
+при недоступной БД данные сохраняются в спул и доливаются позже.
 
 ---
 
@@ -530,7 +579,10 @@ parse_cursor  (source_id, feed_key, last_page, cycle_id, updated_at)
 - **Alive-check worker:** `parsers/kolesa/alive_check.py` берёт inactive и проверяет их URL напрямую. Работает как компенсация для ситуаций когда объявление активно на сайте, но парсер до него не добрался. Rate-limit: ~2 req/s, kolesa не банит. Запускается каждые 6h + автоматически после успешного `kolesa_full`.
 - **Kolesa атрибуты:** На страницах листинга kolesa.kz возвращает только `brand`, `model`, `avgPrice` в `attributes` — поля `mileage_km`, `engine_volume_cc`, `fuel_type` и т.д. будут `NULL`. Полные данные доступны только на странице конкретного объявления (парсинг детальных страниц не реализован).
 - **Neon Pooler + asyncpg:** Используется `statement_cache_size=0` — обязательно при работе через PgBouncer в transaction-pooling режиме, иначе `InvalidSQLStatementNameError`.
-- **Neon 512 MB и архивный контур:** 2026-08-29 база упёрлась в лимит free tier — все пишущие workflow падали с `DiskFullError`. Решение: Neon хранит только hot window (~90 дней по `last_seen_at`), полная история копится в локальном Postgres `kolesa_archive` на Mac mini (ежедневный pull-синк + еженедельная подрезка Neon строго после подтверждённой синхронизации; детали в `infrastructure/archive/README.md`). Тогда же в Neon дропнуты неиспользуемые индексы `idx_listings_first_seen` (32 MB, 122 обращения) и `idx_listings_liveness` (10 MB, 19) — при надобности пересоздать по `database/init_neon.sql`.
+- **Neon 512 MB и архивный контур:** 2026-08-29 база упёрлась в лимит free tier — все пишущие workflow падали с `DiskFullError`. Решение: Neon хранит только hot window (~90 дней по `last_seen_at`, плюс бюджет `NEON_MAX_LISTINGS`=450k строк), полная история копится в локальном Postgres `kolesa_archive` на Mac mini (ежедневно в 03:30 синк + подрезка Neon строго после подтверждённой синхронизации; детали в `infrastructure/archive/README.md`). Тогда же в Neon дропнуты неиспользуемые индексы `idx_listings_first_seen` (32 MB, 122 обращения) и `idx_listings_liveness` (10 MB, 19) — при надобности пересоздать по `database/init_neon.sql`.
+- **Повтор 2026-09-20…25 — launchd и macOS TCC:** launchd-агенты архивного контура указывали прямо в репо (`~/Documents/...`), а macOS запрещает фоновым процессам читать `~/Documents` → `Operation not permitted` (exit 126) каждую ночь, молча. Neon снова дорос до 512 MB, неделю не писались цены/новые объявления/`parser_runs`. Фикс: `infrastructure/archive/install.sh` копирует скрипты в `~/.local/share/kolesa-archive`, а `DATABASE_URL` — в `~/.config/kolesa-archive/neon.env` (600); при сбое ночного прогона — уведомление macOS. **После любой правки скриптов в `infrastructure/archive/` — перезапустить `install.sh`** (launchd исполняет копии).
+- **Лимит Neon = размер файлов, а не данных:** после DELETE + VACUUM место внутри таблиц переиспользуется, но файлы не уменьшаются, а индексы с растущим ключом (`price_history.id/recorded_at`, `external_id`) растут правым краем и просят НОВЫЕ страницы — у потолка это `could not extend file` на каждой вставке цены при наполовину пустых таблицах. После крупной подрезки нужен `infrastructure/archive/neon_compact.sql` (REINDEX CONCURRENTLY; 2026-09-25 вернул 512 → 363 MB — индексы были раздуты в 3–4 раза). Расширения (`pg_freespacemap`, `pgstattuple`) на Neon ставить нельзя — «must be superuser» / нет места под каталог.
+- **Спул несохранённых объявлений:** если `save_listing` падает по причине БД (переполнение, обрыв), объявление пишется в `spool/<source>-<pid>.jsonl` с моментом наблюдения, job заливает каталог артефактом `spool-*`, а `db_guard.yml` доливает его. Ошибки самих данных (`DataError`, `IntegrityConstraintViolation`) в спул не идут. Долив идемпотентен: `seen_at` не откатывает `last_seen_at` назад, не воскрешает объявление, деактивированное после наблюдения, а цена сравнивается с действовавшей на момент наблюдения.
 - **Бесплатные прокси:** Включены для mycar/olx/avtorynok/newauto. Для kolesa отключены (`use_proxy=False`) — curl_cffi с Chrome impersonation проходит напрямую, прокси только добавляют задержки через retry-loop.
 - **avtorynok.kz пагинация:** Сайт возвращает одни и те же ~16 объявлений на любом номере страницы. Парсер останавливается после первого повтора ID (стоп по `seen_ids`).
 - **newauto.kz TLS fingerprinting:** Сайт блокирует curl/aiohttp — возвращает пустой ответ. Работает только через `curl_cffi` с Chrome impersonation. Каталог (/catalog) содержит 241 модель без числовых ID; используем slug-ID вида `bmw-x5`.

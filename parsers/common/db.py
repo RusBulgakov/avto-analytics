@@ -11,6 +11,7 @@ import os
 import re
 import ssl as _ssl
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import AsyncIterator, Optional
 from urllib.parse import urlparse, parse_qs
 
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 # Кириллица ("Алматы") → latin slug ("almaty"); без этого ~1500 listings
 # выпадали с карты (geo endpoint матчит по slug'у из _CITY_COORDS).
 from parsers.common.city_normalizer import normalize_city
+from parsers.common.spool import spool_listing
 
 _pool: asyncpg.Pool | None = None
 
@@ -212,12 +214,44 @@ async def db_conn() -> AsyncIterator[asyncpg.Connection]:
         yield conn
 
 
-async def save_listing(conn: asyncpg.Connection, data: dict) -> str:
+# Ошибки самих данных: повторная попытка (replay) их не исправит — в спул не пишем.
+_NON_RETRYABLE_DB_ERRORS = (
+    asyncpg.exceptions.DataError,
+    asyncpg.exceptions.IntegrityConstraintViolationError,
+)
+
+
+def _parse_seen_at(value) -> Optional[datetime]:
+    if value is None or isinstance(value, datetime):
+        return value
+    dt = datetime.fromisoformat(str(value))
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+async def save_listing(conn: asyncpg.Connection, data: dict, *, spool_on_error: bool = True):
     """
-    Вставляет или обновляет объявление, возвращает UUID листинга.
+    Вставляет или обновляет объявление, возвращает (UUID листинга, is_new).
     Если цена изменилась — записывает новую запись в price_history.
     Автоматически создает связи с брендами и моделями.
+
+    data["seen_at"] (опционально, datetime/ISO) — момент наблюдения, если он
+    раньше момента записи (долив спула). Без него — NOW(), как всегда.
+
+    Если запись не удалась по причине БД (переполнение, обрыв соединения),
+    объявление уходит в спул (parsers/common/spool.py), исключение
+    пробрасывается дальше — поведение вызывающих парсеров не меняется.
     """
+    try:
+        return await _save_listing_impl(conn, data)
+    except Exception as e:
+        if spool_on_error and not isinstance(e, _NON_RETRYABLE_DB_ERRORS):
+            spool_listing(data, e)
+        raise
+
+
+async def _save_listing_impl(conn: asyncpg.Connection, data: dict):
+    seen_at = _parse_seen_at(data.get("seen_at"))
+
     # 0. Нормализация city перед вставкой — гарантирует latin slug в БД
     # независимо от того, что прислал парсер (OLX/mycar часто кириллицу).
     if data.get("city"):
@@ -301,13 +335,14 @@ async def save_listing(conn: asyncpg.Connection, data: dict) -> str:
             source_id, external_id, brand_id, model_id, title, year, mileage_km,
             engine_volume_cc, engine_power_hp, body_type_id, fuel_type_id,
             transmission_id, drive_type_id, color, city, region, condition,
-            listing_url, is_active, last_seen_at, is_in_stock
+            listing_url, is_active, first_seen_at, last_seen_at, is_in_stock
         )
         SELECT
             s.id, $2, b.id, m.id, $5, $6, $7,
             $8, $9, bt.id, ft.id,
             tt.id, dt.id, $14, $15, $16, $17,
-            $18, TRUE, NOW(), $19
+            $18, TRUE, COALESCE($20::timestamptz, NOW()),
+            COALESCE($20::timestamptz, NOW()), $19
         FROM sources s
         LEFT JOIN brands b ON b.slug = $3
         LEFT JOIN models m ON m.slug = $4 AND m.brand_id = b.id
@@ -317,8 +352,17 @@ async def save_listing(conn: asyncpg.Connection, data: dict) -> str:
         LEFT JOIN drive_types dt ON dt.name = $13
         WHERE s.name = $1
         ON CONFLICT (source_id, external_id) DO UPDATE
-            SET last_seen_at = NOW(),
-                is_active = TRUE,
+            -- $20 (seen_at) задан только при доливе спула: старое наблюдение
+            -- не должно откатывать last_seen_at назад или воскрешать объявление,
+            -- которое после него уже деактивировали. Без $20 — как раньше.
+            SET last_seen_at = GREATEST(listings.last_seen_at, COALESCE($20::timestamptz, NOW())),
+                is_active = CASE
+                    WHEN $20::timestamptz IS NULL
+                         OR listings.last_seen_at IS NULL
+                         OR $20::timestamptz >= listings.last_seen_at
+                    THEN TRUE
+                    ELSE listings.is_active
+                END,
                 -- Обновляем is_in_stock только если парсер прислал известное
                 -- значение (TRUE/FALSE). NULL не перезаписывает existing.
                 is_in_stock = COALESCE(EXCLUDED.is_in_stock, listings.is_in_stock),
@@ -345,7 +389,7 @@ async def save_listing(conn: asyncpg.Connection, data: dict) -> str:
         data.get("transmission"), data.get("drive_type"),
         data.get("color"), data.get("city"), data.get("region"),
         data.get("condition", "used"), data.get("listing_url"),
-        data.get("is_in_stock"),
+        data.get("is_in_stock"), seen_at,
     )
 
     if not row:
@@ -356,15 +400,24 @@ async def save_listing(conn: asyncpg.Connection, data: dict) -> str:
 
     price = data.get("price_kzt")
     if listing_id and price:
-        # Пишем цену только если она изменилась (или первая запись)
+        # Пишем цену только если она изменилась (или первая запись).
+        # «Предыдущая» — последняя на момент наблюдения: при доливе спула
+        # сравниваем с ценой, действовавшей тогда, а не с более свежей.
         last_price = await conn.fetchval(
-            "SELECT price_kzt FROM price_history WHERE listing_id=$1 ORDER BY recorded_at DESC LIMIT 1",
-            listing_id,
+            """
+            SELECT price_kzt FROM price_history
+            WHERE listing_id = $1 AND recorded_at <= COALESCE($2::timestamptz, NOW())
+            ORDER BY recorded_at DESC LIMIT 1
+            """,
+            listing_id, seen_at,
         )
         if last_price != price:
             await conn.execute(
-                "INSERT INTO price_history (listing_id, price_kzt, price_usd) VALUES ($1, $2, $3)",
-                listing_id, price, data.get("price_usd"),
+                """
+                INSERT INTO price_history (listing_id, price_kzt, price_usd, recorded_at)
+                VALUES ($1, $2, $3, COALESCE($4::timestamptz, NOW()))
+                """,
+                listing_id, price, data.get("price_usd"), seen_at,
             )
 
     return listing_id, is_new
